@@ -1,0 +1,15 @@
+[package]
+name = "rust-livekit-streamer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dotenvy = "0.15.7"
+env_logger = "0.11.5"
+image = "0.25.2"
+livekit = { git="https://github.com/livekit/rust-sdks.git", package="livekit", features = ["rustls-tls-native-roots"] }
+livekit-api = {git="https://github.com/livekit/rust-sdks.git", package="livekit-api" }
+log = "0.4.22"
+opencv = { version = "0.92.1", features = ["clang-runtime"] }
+parking_lot = "0.12.3"
+tokio = { version = "1", features = ["full"] }
