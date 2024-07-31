@@ -1,7 +1,6 @@
 use image::ImageFormat;
 use image::RgbaImage;
 use livekit::options::TrackPublishOptions;
-use livekit::options::VideoCodec;
 use livekit::prelude::*;
 use livekit::webrtc::video_source::RtcVideoSource;
 use livekit::webrtc::video_source::VideoResolution;

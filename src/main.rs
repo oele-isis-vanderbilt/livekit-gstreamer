@@ -6,15 +6,17 @@ use std::{env, sync::Arc};
 // Connect to a room using the specified env variables
 // and print all incoming events
 
+mod gst_camera_track;
 mod logo_track;
 mod video_track;
 
-use logo_track::LogoTrack;
-use video_track::VideoTrack;
+use gst_camera_track::{GSTCameraTrack, VideoPreset};
 
 #[tokio::main]
 async fn main() {
     dotenv().ok();
+    // Initialize gstreamer
+    gstreamer::init().unwrap();
     std::env::set_var("RUST_LOG", "info");
     env_logger::init();
 
@@ -43,13 +45,14 @@ async fn main() {
         String::from(new_room.clone().sid().await)
     );
 
-    let mut track = LogoTrack::new(new_room.clone());
+    let mut gstreamer_track = GSTCameraTrack::new(
+        "/dev/video0",
+        "I420",
+        VideoPreset::H1080p,
+        Some(new_room.clone()),
+    );
 
-    track.publish().await.unwrap();
-
-    let mut vtrack = VideoTrack::new(new_room.clone());
-
-    vtrack.publish().await.unwrap();
+    gstreamer_track.publish().await.unwrap();
 
     new_room
         .clone()
