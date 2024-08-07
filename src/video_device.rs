@@ -3,8 +3,8 @@ use gstreamer::{Device, DeviceMonitor};
 use gstreamer_app::AppSink;
 use std::sync::Arc;
 use thiserror::Error;
-use tokio::sync::broadcast::Sender;
-use tokio::sync::oneshot::Receiver;
+use tokio::sync::broadcast;
+use tokio::sync::mpsc;
 
 const SUPPORTED_CODECS: [&str; 3] = ["video/x-raw", "video/x-h264", "image/jpeg"];
 const FRAME_FORMAT: &str = "I420";
@@ -16,6 +16,7 @@ fn get_gst_device(path: &str) -> Option<Device> {
     let device = device_monitor.devices().into_iter().find(|d| {
         let props = d.properties();
         match props {
+            // FixMe: This only works for v4l2 devices
             Some(props) => {
                 let path_prop = props.get::<Option<String>>("object.path").unwrap();
                 path_prop.is_some() && path_prop.unwrap().contains(path)
@@ -36,24 +37,41 @@ pub struct GSTVideoDevice {
     pub device_id: String,
 }
 
+pub async fn run_pipeline(
+    pipeline: gstreamer::Pipeline,
+    tx: mpsc::Sender<()>,
+) -> Result<(), GStreamerError> {
+    pipeline.set_state(gstreamer::State::Playing).unwrap();
+    let bus = pipeline.bus().unwrap();
+    for msg in bus.iter_timed(gstreamer::ClockTime::NONE) {
+        use gstreamer::MessageView;
+        match msg.view() {
+            MessageView::Eos(..) => break,
+            MessageView::Error(err) => {
+                eprintln!("Error: {:?}", err.error());
+                break;
+            }
+            _ => (),
+        }
+    }
+    tx.send(())
+        .await
+        .map_err(|_| GStreamerError::PipelineError("Failed to send signal".to_string()))?;
+    pipeline.set_state(gstreamer::State::Null).unwrap();
+    Ok(())
+}
+
 impl GSTVideoDevice {
     pub fn from_device_path(path: &str) -> Result<Self, GStreamerError> {
         let device = get_gst_device(path);
         let device =
             device.ok_or_else(|| GStreamerError::DeviceError("No device found".to_string()))?;
         let display_name: String = device.display_name().into();
-        let properties = device.properties().unwrap();
-        let path: Option<String> = properties
-            .get::<Option<String>>("object.path")
-            .unwrap_or(None)
-            .and_then(|val| val.split(':').nth(1).map(|s| s.to_string()));
 
-        let path =
-            path.ok_or_else(|| GStreamerError::DeviceError("No device path found".to_string()))?;
         let device = GSTVideoDevice {
             display_name,
             device_class: device.device_class().into(),
-            device_id: path,
+            device_id: path.into(),
         };
         Ok(device)
     }
@@ -98,15 +116,14 @@ impl GSTVideoDevice {
             .collect()
     }
 
-    pub async fn pipeline(
+    pub fn pipeline(
         &self,
         codec: &str,
         width: i32,
         height: i32,
         framerate: i32,
-        tx: Arc<Sender<Arc<Buffer>>>,
-        mut rx: Receiver<()>,
-    ) -> Result<(), GStreamerError> {
+        tx: Arc<broadcast::Sender<Arc<Buffer>>>,
+    ) -> Result<gstreamer::Pipeline, GStreamerError> {
         if !SUPPORTED_CODECS.contains(&codec) {
             return Err(GStreamerError::PipelineError(format!(
                 "Unsupported codec {}",
@@ -122,17 +139,16 @@ impl GSTVideoDevice {
         }
 
         if codec == "video/x-raw" {
-            self.video_xraw_pipeline(width, height, framerate, tx, rx)
-                .await?;
+            return self.video_xraw_pipeline(width, height, framerate);
         } else if codec == "video/x-h264" {
-            self.video_xh264_pipeline(width, height, framerate, tx, rx)
-                .await?;
+            return self.video_xh264_pipeline(width, height, framerate);
         } else if codec == "image/jpeg" {
-            self.image_jpeg_pipeline(width, height, framerate, tx, rx)
-                .await?;
+            return self.image_jpeg_pipeline(width, height, framerate, tx);
         }
 
-        Ok(())
+        Err(GStreamerError::PipelineError(
+            "Failed to create pipeline".to_string(),
+        ))
     }
 
     pub fn supports(&self, codec: &str, width: i32, height: i32, framerate: i32) -> bool {
@@ -150,9 +166,7 @@ impl GSTVideoDevice {
         width: i32,
         height: i32,
         framerate: i32,
-        tx: Arc<Sender<Arc<Buffer>>>,
-        mut rx: Receiver<()>,
-    ) -> Result<(), GStreamerError> {
+    ) -> Result<gstreamer::Pipeline, GStreamerError> {
         let input = self.get_video_element()?;
         let caps_element = gstreamer::ElementFactory::make("capsfilter")
             .build()
@@ -191,7 +205,7 @@ impl GSTVideoDevice {
             }
         }
         pipeline.set_state(gstreamer::State::Null).unwrap();
-        Ok(())
+        Ok(pipeline)
     }
 
     fn video_xh264_pipeline(
@@ -199,9 +213,7 @@ impl GSTVideoDevice {
         width: i32,
         height: i32,
         framerate: i32,
-        tx: Arc<Sender<Arc<Buffer>>>,
-        mut rx: Receiver<()>,
-    ) -> Result<(), GStreamerError> {
+    ) -> Result<gstreamer::Pipeline, GStreamerError> {
         let input = self.get_video_element()?;
         let caps_element = gstreamer::ElementFactory::make("capsfilter")
             .build()
@@ -239,7 +251,7 @@ impl GSTVideoDevice {
             }
         }
         pipeline.set_state(gstreamer::State::Null).unwrap();
-        Ok(())
+        Ok(pipeline)
     }
 
     fn image_jpeg_pipeline(
@@ -247,9 +259,8 @@ impl GSTVideoDevice {
         width: i32,
         height: i32,
         framerate: i32,
-        tx: Arc<Sender<Arc<Buffer>>>,
-        mut rx: Receiver<()>,
-    ) -> Result<(), GStreamerError> {
+        tx: Arc<broadcast::Sender<Arc<Buffer>>>,
+    ) -> Result<gstreamer::Pipeline, GStreamerError> {
         let input = self.get_video_element()?;
         let caps_element = gstreamer::ElementFactory::make("capsfilter")
             .build()
@@ -279,22 +290,7 @@ impl GSTVideoDevice {
         gstreamer::Element::link_many(&[&input, &caps_element, &jpegdec, appsink.upcast_ref()])
             .map_err(|_| GStreamerError::PipelineError("Failed to link elements".to_string()))?;
 
-        let pipeline_clone = pipeline.clone();
-
-        tokio::spawn(async move {
-            pipeline_clone.set_state(gstreamer::State::Playing).unwrap();
-            let bus = pipeline_clone.bus().unwrap();
-            loop {
-                tokio::select! {
-                    _ = &mut rx => {
-                        pipeline_clone.set_state(gstreamer::State::Null).unwrap();
-                        break;
-                    }
-                }
-            }
-        });
-
-        Ok(())
+        Ok(pipeline)
     }
 
     fn get_video_element(&self) -> Result<gstreamer::Element, GStreamerError> {
@@ -303,7 +299,7 @@ impl GSTVideoDevice {
         Ok(element)
     }
 
-    fn broadcast_appsink(&self, tx: Arc<Sender<Arc<Buffer>>>) -> Result<AppSink, GStreamerError> {
+    fn broadcast_appsink(&self, tx: Arc<broadcast::Sender<Arc<Buffer>>>) -> Result<AppSink, GStreamerError> {
         let appsink = gstreamer::ElementFactory::make("appsink")
             .name("xraw-appsink")
             .build()
