@@ -2,9 +2,9 @@
 name = "rust-livekit-streamer"
 version = "0.1.0"
 edition = "2021"
-default-run = "rust-livekit-streamer"
 
 [dependencies]
+clap = { version = "4.5.12", features = ["derive"] }
 dotenvy = "0.15.7"
 env_logger = "0.11.5"
 gstreamer = "0.23.0"
@@ -16,9 +16,5 @@ livekit-api = {git="https://github.com/livekit/rust-sdks.git", package="livekit-
 log = "0.4.22"
 opencv = { version = "0.92.1", features = ["clang-runtime"] }
 parking_lot = "0.12.3"
+thiserror = "1.0.63"
 tokio = { version = "1", features = ["full"] }
-
-[lib]
-name = "rust_livekit_streamer"
-path = "src/lib.rs"
-crate-type = ["cdylib"]

@@ -1,1 +1,2 @@
-pub mod gst_camera_track;
+pub mod devices;
+pub mod video_device;
