@@ -144,9 +144,9 @@ impl GSTVideoDevice {
         }
 
         if codec == "video/x-raw" {
-            return self.video_xraw_pipeline(width, height, framerate);
+            return self.video_xraw_pipeline(width, height, framerate, tx);
         } else if codec == "video/x-h264" {
-            return self.video_xh264_pipeline(width, height, framerate);
+            return self.video_xh264_pipeline(width, height, framerate, tx);
         } else if codec == "image/jpeg" {
             return self.image_jpeg_pipeline(width, height, framerate, tx);
         }
@@ -171,6 +171,7 @@ impl GSTVideoDevice {
         width: i32,
         height: i32,
         framerate: i32,
+        tx: Arc<broadcast::Sender<Arc<Buffer>>>
     ) -> Result<gstreamer::Pipeline, GStreamerError> {
         let input = self.get_video_element()?;
         let caps_element = gstreamer::ElementFactory::make("capsfilter")
@@ -186,30 +187,13 @@ impl GSTVideoDevice {
             .build();
         caps_element.set_property("caps", caps);
 
-        let sink = gstreamer::ElementFactory::make("autovideosink")
-            .build()
-            .map_err(|_| {
-                GStreamerError::PipelineError("Failed to create autovideosink".to_string())
-            })?;
-
+        let sink = self.broadcast_appsink(tx)?;
+        
         let pipeline = gstreamer::Pipeline::with_name("show-xraw");
-
-        pipeline.add_many([&input, &caps_element, &sink]).unwrap();
-        gstreamer::Element::link_many([&input, &caps_element, &sink]).unwrap();
-        pipeline.set_state(gstreamer::State::Playing).unwrap();
-        let bus = pipeline.bus().unwrap();
-        for msg in bus.iter_timed(gstreamer::ClockTime::NONE) {
-            use gstreamer::MessageView;
-            match msg.view() {
-                MessageView::Eos(..) => break,
-                MessageView::Error(err) => {
-                    eprintln!("Error: {:?}", err.error());
-                    break;
-                }
-                _ => (),
-            }
-        }
-        pipeline.set_state(gstreamer::State::Null).unwrap();
+        pipeline.add_many([&input, &caps_element, sink.upcast_ref()]).unwrap();
+        gstreamer::Element::link_many([&input, &caps_element, sink.upcast_ref()]).unwrap();
+       
+       
         Ok(pipeline)
     }
 
@@ -218,6 +202,7 @@ impl GSTVideoDevice {
         width: i32,
         height: i32,
         framerate: i32,
+        tx: Arc<broadcast::Sender<Arc<Buffer>>>,
     ) -> Result<gstreamer::Pipeline, GStreamerError> {
         let input = self.get_video_element()?;
         let caps_element = gstreamer::ElementFactory::make("capsfilter")
@@ -232,30 +217,28 @@ impl GSTVideoDevice {
             .build();
         caps_element.set_property("caps", caps);
 
-        let sink = gstreamer::ElementFactory::make("autovideosink")
+        let h264parse = gstreamer::ElementFactory::make("h264parse")
             .build()
+            .map_err(|_| GStreamerError::PipelineError("Failed to create h264parse".to_string()))?;
+
+        let avdec_h264 = gstreamer::ElementFactory::make("avdec_h264")
+            .build()
+            .map_err(|_| GStreamerError::PipelineError("Failed to create avdec_h264".to_string()))?;
+
+        let appsink = self.broadcast_appsink(tx)?;
+
+        let pipeline = gstreamer::Pipeline::with_name("show-h264");
+
+        pipeline
+            .add_many([&input, &caps_element, &h264parse, &avdec_h264, appsink.upcast_ref()])
             .map_err(|_| {
-                GStreamerError::PipelineError("Failed to create autovideosink".to_string())
+                GStreamerError::PipelineError("Failed to add elements to pipeline".to_string())
             })?;
 
-        let pipeline = gstreamer::Pipeline::with_name("show-xh264");
+        gstreamer::Element::link_many([&input, &caps_element, &h264parse, &avdec_h264, appsink.upcast_ref()])
+            .map_err(|_| GStreamerError::PipelineError("Failed to link elements".to_string()))?;
+        
 
-        pipeline.add_many([&input, &caps_element, &sink]).unwrap();
-        gstreamer::Element::link_many([&input, &caps_element, &sink]).unwrap();
-        pipeline.set_state(gstreamer::State::Playing).unwrap();
-        let bus = pipeline.bus().unwrap();
-        for msg in bus.iter_timed(gstreamer::ClockTime::NONE) {
-            use gstreamer::MessageView;
-            match msg.view() {
-                MessageView::Eos(..) => break,
-                MessageView::Error(err) => {
-                    eprintln!("Error: {:?}", err.error());
-                    break;
-                }
-                _ => (),
-            }
-        }
-        pipeline.set_state(gstreamer::State::Null).unwrap();
         Ok(pipeline)
     }
 

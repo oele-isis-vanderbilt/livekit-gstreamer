@@ -18,8 +18,8 @@ async fn main() -> Result<(), LivekitGSTTrackError> {
     let api_secret = env::var("LIVEKIT_API_SECRET").expect("LIVEKIT_API_SECRET is not set");
 
     let token = access_token::AccessToken::with_api_key(&api_key, &api_secret)
-        .with_identity("rust-bot")
-        .with_name("Rust Bot")
+        .with_identity("rust-bot-image/jpeg")
+        .with_name("Rust Bot Image/JPEG")
         .with_grants(access_token::VideoGrants {
             room_join: true,
             room: "DemoRoom".to_string(),
@@ -41,7 +41,7 @@ async fn main() -> Result<(), LivekitGSTTrackError> {
             width: 1920,
             height: 1080,
             framerate: 30,
-            device_id: "/dev/video0".to_string(),
+            device_id: "/dev/video4".to_string(),
         },
     );
 
