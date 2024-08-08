@@ -1,23 +1,17 @@
+use crate::video_device::{run_pipeline, GSTVideoDevice, GStreamerError};
 use gstreamer::Buffer;
-use livekit::options::TrackPublishOptions;
-use livekit::track::LocalTrack;
-use livekit::track::TrackSource;
-use livekit::webrtc::prelude::I420Buffer;
-use livekit::webrtc::prelude::RtcVideoSource;
-use livekit::webrtc::prelude::VideoFrame;
-use livekit::webrtc::prelude::VideoRotation;
-use livekit::RoomError;
 use livekit::{
-    track::LocalVideoTrack,
-    webrtc::{prelude::VideoResolution, video_source::native::NativeVideoSource},
-    Room
+    options::TrackPublishOptions,
+    track::{LocalTrack, LocalVideoTrack, TrackSource},
+    webrtc::{
+        prelude::{I420Buffer, RtcVideoSource, VideoFrame, VideoResolution, VideoRotation},
+        video_source::native::NativeVideoSource,
+    },
+    Room, RoomError,
 };
 use std::sync::Arc;
 use thiserror::Error;
-use tokio::sync::broadcast;
-use tokio::sync::mpsc;
-use crate::video_device::{run_pipeline, GSTVideoDevice, GStreamerError};
-
+use tokio::sync::{broadcast, mpsc};
 
 #[derive(Debug, Error)]
 pub enum LivekitGSTTrackError {
@@ -27,7 +21,7 @@ pub enum LivekitGSTTrackError {
     RoomError(#[from] RoomError),
 }
 
-pub struct TrackHandle {
+struct TrackHandle {
     close_tx: mpsc::Sender<()>,
     frame_tx: broadcast::Sender<Arc<Buffer>>,
     track: LocalVideoTrack,
@@ -69,12 +63,14 @@ impl LivekitGSTVideoTrack {
 
     pub async fn unpublish(&mut self) -> Result<(), LivekitGSTTrackError> {
         if let Some(handle) = self.handle.take() {
-            let _ = handle.close_tx.send(());
+            let _ = handle.close_tx.send(()).await;
             let _ = handle.task.await;
-            self.room
-                .local_participant()
-                .unpublish_track(&handle.track.sid())
-                .await?;
+            if self.room.connection_state() == livekit::ConnectionState::Connected {
+                self.room
+                    .local_participant()
+                    .unpublish_track(&handle.track.sid())
+                    .await?;
+            }
         }
         Ok(())
     }
@@ -83,7 +79,7 @@ impl LivekitGSTVideoTrack {
         self.unpublish().await?;
 
         let (frame_tx, _) = broadcast::channel::<Arc<Buffer>>(1);
-        let (close_tx, mut close_rx) = mpsc::channel::<()>(1);
+        let (close_tx, close_rx) = mpsc::channel::<()>(1);
 
         let device = GSTVideoDevice::from_device_path(&self.publish_options.device_id)?;
 
@@ -111,8 +107,9 @@ impl LivekitGSTVideoTrack {
             self.rtc_source.clone(),
             pipeline,
         ));
-        
-        self.room.local_participant()
+
+        self.room
+            .local_participant()
             .publish_track(
                 LocalTrack::Video(track.clone()),
                 TrackPublishOptions {
@@ -151,6 +148,8 @@ impl LivekitGSTVideoTrack {
         loop {
             tokio::select! {
                 _ = close_rx.recv() => {
+                    use gstreamer::prelude::*;
+                    pipeline.set_state(gstreamer::State::Null).unwrap();
                     break;
                 },
                 frame = frames_rx.recv() => {
@@ -159,9 +158,9 @@ impl LivekitGSTVideoTrack {
                         let data = map.as_slice();
                         let timestamp_us = frame.pts().unwrap_or_default().useconds() as i64;
                         let res = rtc_source.video_resolution();
-                        let width = res.width as u32;
-                        let height = res.height as u32;
-                        let mut wrtc_video_buffer = I420Buffer::new(width as u32, height as u32);
+                        let width = res.width;
+                        let height = res.height;
+                        let mut wrtc_video_buffer = I420Buffer::new(width, height);
                         let (data_y, data_u, data_v) = wrtc_video_buffer.data_mut();
 
                         let y_plane_size = (width * height) as usize;
@@ -176,17 +175,15 @@ impl LivekitGSTVideoTrack {
                         let video_frame = VideoFrame {
                             buffer: wrtc_video_buffer,
                             rotation: VideoRotation::VideoRotation0,
-                            timestamp_us: timestamp_us,
+                            timestamp_us,
                         };
                         rtc_source.capture_frame(&video_frame);
                     }
                 }
             }
         }
-
         let _ = pipeline_task.await;
     }
-    
 }
 
 impl Drop for LivekitGSTVideoTrack {

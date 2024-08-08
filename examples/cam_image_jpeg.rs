@@ -1,9 +1,8 @@
-mod livekit_track;
-mod video_device;
 use dotenvy::dotenv;
+use livekit::{Room, RoomEvent, RoomOptions};
 
 use livekit_api::access_token;
-use livekit_track::{LivekitGSTTrackError, LivekitGSTVideoTrack, VideoPublishOptions};
+use rust_livekit_streamer::{LivekitGSTTrackError, LivekitGSTVideoTrack, VideoPublishOptions};
 use std::{env, sync::Arc};
 
 #[tokio::main]
@@ -58,7 +57,7 @@ async fn main() -> Result<(), LivekitGSTTrackError> {
         match msg {
             RoomEvent::Disconnected { reason } => {
                 log::info!("Disconnected from room: {:?}", reason);
-                track.unpublish().await.unwrap();
+                track.unpublish().await?;
                 break;
             }
             _ => {

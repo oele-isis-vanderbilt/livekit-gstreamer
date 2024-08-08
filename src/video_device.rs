@@ -33,6 +33,7 @@ fn get_gst_device(path: &str) -> Option<Device> {
 #[derive(Debug, Clone)]
 pub struct GSTVideoDevice {
     pub display_name: String,
+    #[allow(dead_code)]
     pub device_class: String,
     pub device_id: String,
 }
@@ -50,6 +51,12 @@ pub async fn run_pipeline(
             MessageView::Error(err) => {
                 eprintln!("Error: {:?}", err.error());
                 break;
+            }
+            MessageView::StateChanged(e) => {
+                // Check if we need to stop the pipeline
+                if e.current() == gstreamer::State::Null {
+                    break;
+                }
             }
             _ => (),
         }
@@ -86,7 +93,7 @@ impl GSTVideoDevice {
                 let width = structure.get::<i32>("width").unwrap();
                 let height = structure.get::<i32>("height").unwrap();
                 let mut framerates = vec![];
-                if let Some(framerate_fields) = structure.get::<gstreamer::List>("framerate").ok() {
+                if let Ok(framerate_fields) = structure.get::<gstreamer::List>("framerate") {
                     let frates: Vec<i32> = framerate_fields
                         .iter()
                         .map(|f| {
@@ -98,9 +105,7 @@ impl GSTVideoDevice {
                         })
                         .collect();
                     framerates.extend(frates);
-                } else if let Some(framerate) =
-                    structure.get::<gstreamer::Fraction>("framerate").ok()
-                {
+                } else if let Ok(framerate) = structure.get::<gstreamer::Fraction>("framerate") {
                     framerates.push(framerate.numer() / framerate.denom());
                 }
 
@@ -174,10 +179,10 @@ impl GSTVideoDevice {
                 GStreamerError::PipelineError("Failed to create capsfilter".to_string())
             })?;
         let caps = gstreamer::Caps::builder("video/x-raw")
-            .field("width", &width)
-            .field("height", &height)
+            .field("width", width)
+            .field("height", height)
             .field("format", FRAME_FORMAT)
-            .field("framerate", &gstreamer::Fraction::new(framerate, 1))
+            .field("framerate", gstreamer::Fraction::new(framerate, 1))
             .build();
         caps_element.set_property("caps", caps);
 
@@ -189,8 +194,8 @@ impl GSTVideoDevice {
 
         let pipeline = gstreamer::Pipeline::with_name("show-xraw");
 
-        pipeline.add_many(&[&input, &caps_element, &sink]).unwrap();
-        gstreamer::Element::link_many(&[&input, &caps_element, &sink]).unwrap();
+        pipeline.add_many([&input, &caps_element, &sink]).unwrap();
+        gstreamer::Element::link_many([&input, &caps_element, &sink]).unwrap();
         pipeline.set_state(gstreamer::State::Playing).unwrap();
         let bus = pipeline.bus().unwrap();
         for msg in bus.iter_timed(gstreamer::ClockTime::NONE) {
@@ -221,9 +226,9 @@ impl GSTVideoDevice {
                 GStreamerError::PipelineError("Failed to create capsfilter".to_string())
             })?;
         let caps = gstreamer::Caps::builder("video/x-h264")
-            .field("width", &width)
-            .field("height", &height)
-            .field("framerate", &gstreamer::Fraction::new(framerate, 1))
+            .field("width", width)
+            .field("height", height)
+            .field("framerate", gstreamer::Fraction::new(framerate, 1))
             .build();
         caps_element.set_property("caps", caps);
 
@@ -235,8 +240,8 @@ impl GSTVideoDevice {
 
         let pipeline = gstreamer::Pipeline::with_name("show-xh264");
 
-        pipeline.add_many(&[&input, &caps_element, &sink]).unwrap();
-        gstreamer::Element::link_many(&[&input, &caps_element, &sink]).unwrap();
+        pipeline.add_many([&input, &caps_element, &sink]).unwrap();
+        gstreamer::Element::link_many([&input, &caps_element, &sink]).unwrap();
         pipeline.set_state(gstreamer::State::Playing).unwrap();
         let bus = pipeline.bus().unwrap();
         for msg in bus.iter_timed(gstreamer::ClockTime::NONE) {
@@ -268,9 +273,9 @@ impl GSTVideoDevice {
                 GStreamerError::PipelineError("Failed to create capsfilter".to_string())
             })?;
         let caps = gstreamer::Caps::builder("image/jpeg")
-            .field("width", &width)
-            .field("height", &height)
-            .field("framerate", &gstreamer::Fraction::new(framerate, 1))
+            .field("width", width)
+            .field("height", height)
+            .field("framerate", gstreamer::Fraction::new(framerate, 1))
             .build();
         caps_element.set_property("caps", caps);
 
@@ -283,11 +288,11 @@ impl GSTVideoDevice {
         let pipeline = gstreamer::Pipeline::with_name("show-jpeg");
 
         pipeline
-            .add_many(&[&input, &caps_element, &jpegdec, appsink.upcast_ref()])
+            .add_many([&input, &caps_element, &jpegdec, appsink.upcast_ref()])
             .map_err(|_| {
                 GStreamerError::PipelineError("Failed to add elements to pipeline".to_string())
             })?;
-        gstreamer::Element::link_many(&[&input, &caps_element, &jpegdec, appsink.upcast_ref()])
+        gstreamer::Element::link_many([&input, &caps_element, &jpegdec, appsink.upcast_ref()])
             .map_err(|_| GStreamerError::PipelineError("Failed to link elements".to_string()))?;
 
         Ok(pipeline)
@@ -299,7 +304,10 @@ impl GSTVideoDevice {
         Ok(element)
     }
 
-    fn broadcast_appsink(&self, tx: Arc<broadcast::Sender<Arc<Buffer>>>) -> Result<AppSink, GStreamerError> {
+    fn broadcast_appsink(
+        &self,
+        tx: Arc<broadcast::Sender<Arc<Buffer>>>,
+    ) -> Result<AppSink, GStreamerError> {
         let appsink = gstreamer::ElementFactory::make("appsink")
             .name("xraw-appsink")
             .build()
@@ -365,6 +373,5 @@ mod tests {
         println!("Device: {:?}", device);
         assert_eq!(device.device_id, path);
         println!("{:?}", device.capabilities());
-        assert!(false);
     }
 }

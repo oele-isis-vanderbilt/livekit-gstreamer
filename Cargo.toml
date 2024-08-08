@@ -1,20 +1,25 @@
 [package]
 name = "rust-livekit-streamer"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2021"
+description = "Uses gstreamer to stream devices from Rust to Livekit rooms"
+license = "Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/oele-isis-vanderbilt/rust-livekit-streamer.git"
+homepage = "https://github.com/oele-isis-vanderbilt/rust-livekit-streamer.git"
+keywords = ["gstreamer", "livekit", "audio", "video", "streaming"]
+authors = ["Umesh Timalsina <umesh.timalsina@vanderbilt.edu>"]
 
 [dependencies]
-clap = { version = "4.5.12", features = ["derive"] }
-dotenvy = "0.15.7"
-env_logger = "0.11.5"
 gstreamer = "0.23.0"
 gstreamer-app = "0.23.0"
 gstreamer-video = "0.23.0"
-image = "0.25.2"
 livekit = { git="https://github.com/livekit/rust-sdks.git", package="livekit", features = ["rustls-tls-native-roots"] }
-livekit-api = {git="https://github.com/livekit/rust-sdks.git", package="livekit-api" }
-log = "0.4.22"
-opencv = { version = "0.92.1", features = ["clang-runtime"] }
-parking_lot = "0.12.3"
 thiserror = "1.0.63"
 tokio = { version = "1", features = ["full"] }
+
+[dev-dependencies]
+dotenvy = "0.15.7"
+log = "0.4.22"
+env_logger = "0.11.5"
+livekit-api = {git="https://github.com/livekit/rust-sdks.git", package="livekit-api" }
