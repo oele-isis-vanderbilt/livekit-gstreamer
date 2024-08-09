@@ -1,3 +1,4 @@
+use crate::utils::random_string;
 use crate::video_device::GStreamerError;
 use crate::video_stream::GstVideoStream;
 use gstreamer::Buffer;
@@ -62,7 +63,7 @@ impl LKParticipant {
             RtcVideoSource::Native(rtc_source.clone()),
         );
 
-        let track_sid = track.sid();
+        let track_sid = random_string("track");
 
         let task = tokio::spawn(Self::track_task(close_rx, frames_rx, rtc_source.clone()));
 
@@ -78,9 +79,9 @@ impl LKParticipant {
             .await?;
 
         self.published_tracks
-            .insert(track_sid.to_string(), TrackHandle { track, task });
+            .insert(track_sid.clone(), TrackHandle { track, task });
 
-        Ok(track_sid.to_string())
+        Ok(track_sid.into())
     }
 
     async fn track_task(
@@ -127,11 +128,11 @@ impl LKParticipant {
 
     pub async fn unpublish_track(&mut self, track_sid: &str) -> Result<(), LKParticipantError> {
         if let Some(handle) = self.published_tracks.get(track_sid) {
-            handle.task.abort();
             self.room
                 .local_participant()
                 .unpublish_track(&handle.track.sid())
                 .await?;
+            handle.task.abort();
         }
         Ok(())
     }

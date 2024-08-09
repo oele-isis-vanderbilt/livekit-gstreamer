@@ -7,15 +7,17 @@ use std::sync::Mutex;
 use thiserror::Error;
 use tokio::sync::broadcast;
 
-const SUPPORTED_CODECS: [&str; 3] = ["video/x-raw", "video/x-h264", "image/jpeg"];
+use crate::utils::random_string;
+
+const SUPPORTED_CODECS: [&str; 2] = ["video/x-h264", "image/jpeg"];
 const FRAME_FORMAT: &str = "I420";
 
 static GLOBAL_DEVICE_MONITOR: Lazy<Arc<Mutex<DeviceMonitor>>> = Lazy::new(|| {
     let monitor = DeviceMonitor::new();
+    monitor.add_filter(Some("Video/Source"), None);
     if let Err(err) = monitor.start() {
         eprintln!("Failed to start global device monitor: {:?}", err);
     }
-    monitor.add_filter(Some("Video/Source"), None);
     Arc::new(Mutex::new(monitor))
 });
 
@@ -174,6 +176,7 @@ impl GSTVideoDevice {
         })
     }
 
+    //FixMe: This Pipeline doesn't work for all devices
     fn video_xraw_pipeline(
         &self,
         width: i32,
@@ -183,6 +186,7 @@ impl GSTVideoDevice {
     ) -> Result<gstreamer::Pipeline, GStreamerError> {
         let input = self.get_video_element()?;
         let caps_element = gstreamer::ElementFactory::make("capsfilter")
+            .name(&random_string("capsfilter"))
             .build()
             .map_err(|_| {
                 GStreamerError::PipelineError("Failed to create capsfilter".to_string())
@@ -197,7 +201,7 @@ impl GSTVideoDevice {
 
         let sink = self.broadcast_appsink(tx)?;
 
-        let pipeline = gstreamer::Pipeline::with_name("show-xraw");
+        let pipeline = gstreamer::Pipeline::with_name(&random_string("stream-xraw"));
         pipeline
             .add_many([&input, &caps_element, sink.upcast_ref()])
             .unwrap();
@@ -215,6 +219,7 @@ impl GSTVideoDevice {
     ) -> Result<gstreamer::Pipeline, GStreamerError> {
         let input = self.get_video_element()?;
         let caps_element = gstreamer::ElementFactory::make("capsfilter")
+            .name(&random_string("capsfilter"))
             .build()
             .map_err(|_| {
                 GStreamerError::PipelineError("Failed to create capsfilter".to_string())
@@ -227,10 +232,12 @@ impl GSTVideoDevice {
         caps_element.set_property("caps", caps);
 
         let h264parse = gstreamer::ElementFactory::make("h264parse")
+            .name(&random_string("h264parse"))
             .build()
             .map_err(|_| GStreamerError::PipelineError("Failed to create h264parse".to_string()))?;
 
         let avdec_h264 = gstreamer::ElementFactory::make("avdec_h264")
+            .name(&random_string("avdec_h264"))
             .build()
             .map_err(|_| {
                 GStreamerError::PipelineError("Failed to create avdec_h264".to_string())
@@ -238,7 +245,7 @@ impl GSTVideoDevice {
 
         let appsink = self.broadcast_appsink(tx)?;
 
-        let pipeline = gstreamer::Pipeline::with_name("show-h264");
+        let pipeline = gstreamer::Pipeline::with_name(&random_string("stream-h264"));
 
         pipeline
             .add_many([
@@ -273,6 +280,7 @@ impl GSTVideoDevice {
     ) -> Result<gstreamer::Pipeline, GStreamerError> {
         let input = self.get_video_element()?;
         let caps_element = gstreamer::ElementFactory::make("capsfilter")
+            .name(&random_string("capsfilter"))
             .build()
             .map_err(|_| {
                 GStreamerError::PipelineError("Failed to create capsfilter".to_string())
@@ -285,12 +293,13 @@ impl GSTVideoDevice {
         caps_element.set_property("caps", caps);
 
         let jpegdec = gstreamer::ElementFactory::make("jpegdec")
+            .name(&random_string("jpegdec"))
             .build()
             .map_err(|_| GStreamerError::PipelineError("Failed to create jpegdec".to_string()))?;
 
         let appsink = self.broadcast_appsink(tx)?;
 
-        let pipeline = gstreamer::Pipeline::with_name("show-jpeg");
+        let pipeline = gstreamer::Pipeline::with_name(&random_string("stream-jpeg"));
 
         pipeline
             .add_many([&input, &caps_element, &jpegdec, appsink.upcast_ref()])
@@ -304,11 +313,11 @@ impl GSTVideoDevice {
     }
 
     fn get_video_element(&self) -> Result<gstreamer::Element, GStreamerError> {
-        println!("--here--, {:?}", self.device_id);
         let device = get_gst_device(&self.device_id).unwrap();
-        println!("Device: {:?}", device);
-        let element = device.create_element(Some("source")).unwrap();
-        println!("Element: {:?}", element);
+        let random_source_name = random_string("source");
+        let element = device
+            .create_element(Some(random_source_name.as_str()))
+            .unwrap();
         Ok(element)
     }
 
@@ -317,7 +326,7 @@ impl GSTVideoDevice {
         tx: Arc<broadcast::Sender<Arc<Buffer>>>,
     ) -> Result<AppSink, GStreamerError> {
         let appsink = gstreamer::ElementFactory::make("appsink")
-            .name("xraw-appsink")
+            .name(&random_string("xraw-appsink"))
             .build()
             .map_err(|_| GStreamerError::PipelineError("Failed to create appsink".to_string()))?;
         let appsink = appsink
