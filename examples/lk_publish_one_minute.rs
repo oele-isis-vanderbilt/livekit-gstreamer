@@ -1,5 +1,5 @@
 use dotenvy::dotenv;
-use livekit::{Room, RoomEvent, RoomOptions};
+use livekit::{Room, RoomOptions};
 
 use livekit_api::access_token;
 use rust_livekit_streamer::{
@@ -20,8 +20,8 @@ async fn main() -> Result<(), LKParticipantError> {
     let api_secret = env::var("LIVEKIT_API_SECRET").expect("LIVEKIT_API_SECRET is not set");
 
     let token = access_token::AccessToken::with_api_key(&api_key, &api_secret)
-        .with_identity("rust-bot-multivideo")
-        .with_name("Rust Bot MultiVideo")
+        .with_identity("rust-bot-h264")
+        .with_name("Rust Bot h264")
         .with_grants(access_token::VideoGrants {
             room_join: true,
             room: "DemoRoom".to_string(),
@@ -30,65 +30,37 @@ async fn main() -> Result<(), LKParticipantError> {
         .to_jwt()
         .unwrap();
 
-    let (room, mut room_rx) = Room::connect(&url, &token, RoomOptions::default())
+    let (room, _) = Room::connect(&url, &token, RoomOptions::default())
         .await
         .unwrap();
 
     let new_room = Arc::new(room);
+
+    // Note: Make sure to replace the device_id with the correct device and the codecs and resolutions are supported by the device
+    // This can be checked by running `v4l2-ctl --list-formats-ext -d /dev/video0` for example or using gst-device-monitor-1.0 Video/Source
+    let mut stream = GstVideoStream::new(VideoPublishOptions {
+        codec: "video/x-h264".to_string(),
+        width: 1920,
+        height: 1080,
+        framerate: 30,
+        device_id: "/dev/video4".to_string(),
+    });
+
+    stream.start().await.unwrap();
+
+    let mut participant = LKParticipant::new(new_room.clone());
+
+    let track_sid = participant.publish_video_stream(&mut stream, None).await?;
+
     log::info!(
         "Connected to room: {} - {}",
         new_room.name(),
         String::from(new_room.sid().await)
     );
-
-    // Note: Make sure to replace the device_id with the correct device and the codecs and resolutions are supported by the device
-    // This can be checked by running `v4l2-ctl --list-formats-ext -d /dev/video0` for example or using gst-device-monitor-1.0 Video/Source
-    let mut stream1 = GstVideoStream::new(VideoPublishOptions {
-        codec: "image/jpeg".to_string(),
-        width: 1920,
-        height: 1080,
-        framerate: 30,
-        device_id: "/dev/video0".to_string(),
-    });
-
-    let mut stream2 = GstVideoStream::new(VideoPublishOptions {
-        codec: "video/x-h264".to_string(),
-        width: 1280,
-        height: 720,
-        framerate: 30,
-        device_id: "/dev/video4".to_string(),
-    });
-
-    stream1.start().await.unwrap();
-
-    stream2.start().await.unwrap();
-
-    let mut participant = LKParticipant::new(new_room.clone());
-    participant.publish_video_stream(&mut stream1, None).await?;
-    log::info!(
-        "Published stream 1 from device: {}",
-        stream1.get_device_name().unwrap()
-    );
-
-    participant.publish_video_stream(&mut stream2, None).await?;
-    log::info!(
-        "Published stream 2 from device: {}",
-        stream2.get_device_name().unwrap()
-    );
-
-    while let Some(msg) = room_rx.recv().await {
-        match msg {
-            RoomEvent::Disconnected { reason } => {
-                log::info!("Disconnected from room: {:?}", reason);
-                stream1.stop().await?;
-                stream2.stop().await?;
-                break;
-            }
-            _ => {
-                log::info!("Received room event: {:?}", msg);
-            }
-        }
-    }
+    log::info!("Published track with SID for one minute: {}", track_sid);
+    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+    log::info!("Unpublishing track with SID: {}", track_sid);
+    participant.unpublish_track(&track_sid).await?;
 
     Ok(())
 }

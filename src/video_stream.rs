@@ -59,7 +59,6 @@ impl GstVideoStream {
         let device = GSTVideoDevice::from_device_path(self.publish_options.device_id.as_str())?;
 
         let frame_tx_arc = Arc::new(frame_tx.clone());
-        println!("Starting pipeline");
         let pipeline = device.pipeline(
             &self.publish_options.codec,
             self.publish_options.width,
@@ -67,7 +66,6 @@ impl GstVideoStream {
             self.publish_options.framerate,
             frame_tx_arc.clone(),
         )?;
-        println!("Started pipeline");
 
         let pipline_task = tokio::spawn(run_pipeline(pipeline.clone(), close_tx.clone()));
 

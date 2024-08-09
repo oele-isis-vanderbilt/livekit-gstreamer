@@ -35,7 +35,8 @@ async fn main() -> Result<(), LKParticipantError> {
         .unwrap();
 
     let new_room = Arc::new(room);
-
+    // Note: Make sure to replace the device_id with the correct device and the codecs and resolutions are supported by the device
+    // This can be checked by running `v4l2-ctl --list-formats-ext -d /dev/video0` for example or using gst-device-monitor-1.0 Video/Source
     let mut stream = GstVideoStream::new(VideoPublishOptions {
         codec: "image/jpeg".to_string(),
         width: 1920,

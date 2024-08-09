@@ -1668,6 +1668,7 @@ dependencies = [
  "livekit-api",
  "log",
  "once_cell",
+ "rand",
  "thiserror",
  "tokio",
 ]
