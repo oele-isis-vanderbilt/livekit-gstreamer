@@ -1667,6 +1667,7 @@ dependencies = [
  "livekit",
  "livekit-api",
  "log",
+ "once_cell",
  "thiserror",
  "tokio",
 ]

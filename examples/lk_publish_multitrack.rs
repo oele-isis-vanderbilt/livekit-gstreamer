@@ -51,23 +51,28 @@ async fn main() -> Result<(), LKParticipantError> {
 
     let mut stream2 = GstVideoStream::new(VideoPublishOptions {
         codec: "video/x-h264".to_string(),
-        width: 1920,
-        height: 1080,
+        width: 1280,
+        height: 720,
         framerate: 30,
         device_id: "/dev/video4".to_string(),
     });
 
     stream1.start().await.unwrap();
-    log::info!("Starting stream 1");
 
     stream2.start().await.unwrap();
-    log::info!("Started stream 2");
 
     let mut participant = LKParticipant::new(new_room.clone());
-    log::info!("Publishing stream 1");
     participant.publish_video_stream(&mut stream1, None).await?;
-    log::info!("Starting stream 2");
+    log::info!(
+        "Published stream 1 from device: {}",
+        stream1.get_device_name().unwrap()
+    );
+
     participant.publish_video_stream(&mut stream2, None).await?;
+    log::info!(
+        "Published stream 2 from device: {}",
+        stream2.get_device_name().unwrap()
+    );
 
     while let Some(msg) = room_rx.recv().await {
         match msg {
