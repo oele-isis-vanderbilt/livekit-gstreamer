@@ -2,11 +2,13 @@ use dotenvy::dotenv;
 use livekit::{Room, RoomEvent, RoomOptions};
 
 use livekit_api::access_token;
-use rust_livekit_streamer::{LivekitGSTTrackError, LivekitGSTVideoTrack, VideoPublishOptions};
+use rust_livekit_streamer::{
+    GstVideoStream, LKParticipant, LKParticipantError, VideoPublishOptions,
+};
 use std::{env, sync::Arc};
 
 #[tokio::main]
-async fn main() -> Result<(), LivekitGSTTrackError> {
+async fn main() -> Result<(), LKParticipantError> {
     dotenv().ok();
     // Initialize gstreamer
     gstreamer::init().unwrap();
@@ -34,18 +36,19 @@ async fn main() -> Result<(), LivekitGSTTrackError> {
 
     let new_room = Arc::new(room);
 
-    let mut track = LivekitGSTVideoTrack::new(
-        new_room.clone(),
-        VideoPublishOptions {
-            codec: "image/jpeg".to_string(),
-            width: 1920,
-            height: 1080,
-            framerate: 30,
-            device_id: "/dev/video4".to_string(),
-        },
-    );
+    let mut stream = GstVideoStream::new(VideoPublishOptions {
+        codec: "image/jpeg".to_string(),
+        width: 1920,
+        height: 1080,
+        framerate: 30,
+        device_id: "/dev/video0".to_string(),
+    });
 
-    track.publish().await.unwrap();
+    stream.start().await.unwrap();
+
+    let mut participant = LKParticipant::new(new_room.clone());
+
+    participant.publish_video_stream(&mut stream, None).await?;
 
     log::info!(
         "Connected to room: {} - {}",
@@ -57,7 +60,7 @@ async fn main() -> Result<(), LivekitGSTTrackError> {
         match msg {
             RoomEvent::Disconnected { reason } => {
                 log::info!("Disconnected from room: {:?}", reason);
-                track.unpublish().await?;
+                stream.stop().await?;
                 break;
             }
             _ => {

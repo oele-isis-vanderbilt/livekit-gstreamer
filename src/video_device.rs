@@ -4,7 +4,6 @@ use gstreamer_app::AppSink;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::broadcast;
-use tokio::sync::mpsc;
 
 const SUPPORTED_CODECS: [&str; 3] = ["video/x-raw", "video/x-h264", "image/jpeg"];
 const FRAME_FORMAT: &str = "I420";
@@ -13,13 +12,16 @@ fn get_gst_device(path: &str) -> Option<Device> {
     let device_monitor = DeviceMonitor::new();
     device_monitor.add_filter(Some("Video/Source"), None);
     let _ = device_monitor.start();
+
     let device = device_monitor.devices().into_iter().find(|d| {
         let props = d.properties();
+
         match props {
             // FixMe: This only works for v4l2 devices
             Some(props) => {
-                let path_prop = props.get::<Option<String>>("object.path").unwrap();
-                path_prop.is_some() && path_prop.unwrap().contains(path)
+                let path_prop = props.get::<Option<String>>("object.path");
+                path_prop
+                    .is_ok_and(|path_prop| path_prop.is_some() && path_prop.unwrap().contains(path))
             }
             None => false,
         }
@@ -40,7 +42,7 @@ pub struct GSTVideoDevice {
 
 pub async fn run_pipeline(
     pipeline: gstreamer::Pipeline,
-    tx: mpsc::Sender<()>,
+    tx: broadcast::Sender<()>,
 ) -> Result<(), GStreamerError> {
     pipeline.set_state(gstreamer::State::Playing).unwrap();
     let bus = pipeline.bus().unwrap();
@@ -62,9 +64,7 @@ pub async fn run_pipeline(
         }
     }
     tx.send(())
-        .await
         .map_err(|_| GStreamerError::PipelineError("Failed to send signal".to_string()))?;
-    pipeline.set_state(gstreamer::State::Null).unwrap();
     Ok(())
 }
 
@@ -171,7 +171,7 @@ impl GSTVideoDevice {
         width: i32,
         height: i32,
         framerate: i32,
-        tx: Arc<broadcast::Sender<Arc<Buffer>>>
+        tx: Arc<broadcast::Sender<Arc<Buffer>>>,
     ) -> Result<gstreamer::Pipeline, GStreamerError> {
         let input = self.get_video_element()?;
         let caps_element = gstreamer::ElementFactory::make("capsfilter")
@@ -188,12 +188,13 @@ impl GSTVideoDevice {
         caps_element.set_property("caps", caps);
 
         let sink = self.broadcast_appsink(tx)?;
-        
+
         let pipeline = gstreamer::Pipeline::with_name("show-xraw");
-        pipeline.add_many([&input, &caps_element, sink.upcast_ref()]).unwrap();
+        pipeline
+            .add_many([&input, &caps_element, sink.upcast_ref()])
+            .unwrap();
         gstreamer::Element::link_many([&input, &caps_element, sink.upcast_ref()]).unwrap();
-       
-       
+
         Ok(pipeline)
     }
 
@@ -223,21 +224,34 @@ impl GSTVideoDevice {
 
         let avdec_h264 = gstreamer::ElementFactory::make("avdec_h264")
             .build()
-            .map_err(|_| GStreamerError::PipelineError("Failed to create avdec_h264".to_string()))?;
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to create avdec_h264".to_string())
+            })?;
 
         let appsink = self.broadcast_appsink(tx)?;
 
         let pipeline = gstreamer::Pipeline::with_name("show-h264");
 
         pipeline
-            .add_many([&input, &caps_element, &h264parse, &avdec_h264, appsink.upcast_ref()])
+            .add_many([
+                &input,
+                &caps_element,
+                &h264parse,
+                &avdec_h264,
+                appsink.upcast_ref(),
+            ])
             .map_err(|_| {
                 GStreamerError::PipelineError("Failed to add elements to pipeline".to_string())
             })?;
 
-        gstreamer::Element::link_many([&input, &caps_element, &h264parse, &avdec_h264, appsink.upcast_ref()])
-            .map_err(|_| GStreamerError::PipelineError("Failed to link elements".to_string()))?;
-        
+        gstreamer::Element::link_many([
+            &input,
+            &caps_element,
+            &h264parse,
+            &avdec_h264,
+            appsink.upcast_ref(),
+        ])
+        .map_err(|_| GStreamerError::PipelineError("Failed to link elements".to_string()))?;
 
         Ok(pipeline)
     }
