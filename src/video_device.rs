@@ -1,18 +1,27 @@
 use gstreamer::{prelude::*, Buffer};
 use gstreamer::{Device, DeviceMonitor};
 use gstreamer_app::AppSink;
+use once_cell::sync::Lazy;
 use std::sync::Arc;
+use std::sync::Mutex;
 use thiserror::Error;
 use tokio::sync::broadcast;
 
 const SUPPORTED_CODECS: [&str; 3] = ["video/x-raw", "video/x-h264", "image/jpeg"];
 const FRAME_FORMAT: &str = "I420";
 
-fn get_gst_device(path: &str) -> Option<Device> {
-    let device_monitor = DeviceMonitor::new();
-    device_monitor.add_filter(Some("Video/Source"), None);
-    let _ = device_monitor.start();
+static GLOBAL_DEVICE_MONITOR: Lazy<Arc<Mutex<DeviceMonitor>>> = Lazy::new(|| {
+    let monitor = DeviceMonitor::new();
+    if let Err(err) = monitor.start() {
+        eprintln!("Failed to start global device monitor: {:?}", err);
+    }
+    monitor.add_filter(Some("Video/Source"), None);
+    Arc::new(Mutex::new(monitor))
+});
 
+fn get_gst_device(path: &str) -> Option<Device> {
+    let device_monitor = GLOBAL_DEVICE_MONITOR.clone();
+    let device_monitor = device_monitor.lock().unwrap();
     let device = device_monitor.devices().into_iter().find(|d| {
         let props = d.properties();
 
@@ -26,7 +35,7 @@ fn get_gst_device(path: &str) -> Option<Device> {
             None => false,
         }
     });
-    device_monitor.stop();
+
     device
 }
 
@@ -142,7 +151,6 @@ impl GSTVideoDevice {
                 "Device does not support requested configuration".to_string(),
             ));
         }
-
         if codec == "video/x-raw" {
             return self.video_xraw_pipeline(width, height, framerate, tx);
         } else if codec == "video/x-h264" {
@@ -296,8 +304,11 @@ impl GSTVideoDevice {
     }
 
     fn get_video_element(&self) -> Result<gstreamer::Element, GStreamerError> {
+        println!("--here--, {:?}", self.device_id);
         let device = get_gst_device(&self.device_id).unwrap();
+        println!("Device: {:?}", device);
         let element = device.create_element(Some("source")).unwrap();
+        println!("Element: {:?}", element);
         Ok(element)
     }
 
