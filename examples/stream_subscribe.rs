@@ -1,5 +1,5 @@
 use dotenvy::dotenv;
-use rust_livekit_streamer::{GStreamerError, GstVideoStream, VideoPublishOptions};
+use livekit_gstreamer::{GStreamerError, GstVideoStream, VideoPublishOptions};
 
 #[tokio::main]
 async fn main() -> Result<(), GStreamerError> {

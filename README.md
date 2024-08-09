@@ -1,6 +1,6 @@
-# RUST-LIVEKIT-STREAMER
+# LIVEKIT-GSTREAMER
 
-Experiments with Rust Video Streaming to Livekit. This crate provides necessary functionalities to streaming audio and video and video from local devices using `gstreamer` and `livekit` client sdks.
+Uses gstreamer to stream devices from Rust to Livekit rooms. This crate provides necessary functionalities to streaming audio and video and video from local devices using `gstreamer` and `livekit` client sdks.
 
 
 ## Installation 
@@ -8,9 +8,8 @@ This crate is yet to be published to [crates.io](https://crates.io).
 
 ```toml
 [dependencies]
-rust-livekit-streamer = "..."
+livekit-gstreamer = { git = "https://github.com/oele-isis-vanderbilt/livekit-gstreamer.git" }
 ```
-
 
 
 ## System Dependencies

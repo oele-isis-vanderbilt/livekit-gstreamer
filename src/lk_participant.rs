@@ -81,7 +81,7 @@ impl LKParticipant {
         self.published_tracks
             .insert(track_sid.clone(), TrackHandle { track, task });
 
-        Ok(track_sid.into())
+        Ok(track_sid)
     }
 
     async fn track_task(
