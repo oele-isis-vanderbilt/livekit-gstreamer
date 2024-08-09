@@ -2,9 +2,7 @@ use dotenvy::dotenv;
 use livekit::{Room, RoomEvent, RoomOptions};
 
 use livekit_api::access_token;
-use rust_livekit_streamer::{
-    GstVideoStream, LKParticipant, LKParticipantError, VideoPublishOptions,
-};
+use livekit_gstreamer::{GstVideoStream, LKParticipant, LKParticipantError, VideoPublishOptions};
 use std::{env, sync::Arc};
 
 #[tokio::main]

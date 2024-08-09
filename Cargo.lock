@@ -1153,6 +1153,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "livekit-gstreamer"
+version = "0.0.1"
+dependencies = [
+ "dotenvy",
+ "env_logger",
+ "gstreamer",
+ "gstreamer-app",
+ "gstreamer-video",
+ "livekit",
+ "livekit-api",
+ "log",
+ "once_cell",
+ "rand",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "livekit-protocol"
 version = "0.3.4"
 source = "git+https://github.com/livekit/rust-sdks.git#807b273b15fc726c1dace8dd183c5d1ad3959b7c"
@@ -1653,24 +1671,6 @@ dependencies = [
  "spin",
  "untrusted",
  "windows-sys 0.52.0",
-]
-
-[[package]]
-name = "rust-livekit-streamer"
-version = "0.0.1"
-dependencies = [
- "dotenvy",
- "env_logger",
- "gstreamer",
- "gstreamer-app",
- "gstreamer-video",
- "livekit",
- "livekit-api",
- "log",
- "once_cell",
- "rand",
- "thiserror",
- "tokio",
 ]
 
 [[package]]

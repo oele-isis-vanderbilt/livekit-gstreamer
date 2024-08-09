@@ -1,12 +1,12 @@
 [package]
-name = "rust-livekit-streamer"
+name = "livekit-gstreamer"
 version = "0.0.1"
 edition = "2021"
 description = "Uses gstreamer to stream devices from Rust to Livekit rooms"
 license = "Apache-2.0"
 readme = "README.md"
-repository = "https://github.com/oele-isis-vanderbilt/rust-livekit-streamer.git"
-homepage = "https://github.com/oele-isis-vanderbilt/rust-livekit-streamer.git"
+repository = "https://github.com/oele-isis-vanderbilt/livekit-gstreamer.git"
+homepage = "https://github.com/oele-isis-vanderbilt/livekit-gstreamer.git"
 keywords = ["gstreamer", "livekit", "audio", "video", "streaming"]
 authors = ["Umesh Timalsina <umesh.timalsina@vanderbilt.edu>"]
 

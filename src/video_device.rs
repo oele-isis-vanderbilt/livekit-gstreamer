@@ -186,7 +186,7 @@ impl GSTVideoDevice {
     ) -> Result<gstreamer::Pipeline, GStreamerError> {
         let input = self.get_video_element()?;
         let caps_element = gstreamer::ElementFactory::make("capsfilter")
-            .name(&random_string("capsfilter"))
+            .name(random_string("capsfilter"))
             .build()
             .map_err(|_| {
                 GStreamerError::PipelineError("Failed to create capsfilter".to_string())
@@ -219,7 +219,7 @@ impl GSTVideoDevice {
     ) -> Result<gstreamer::Pipeline, GStreamerError> {
         let input = self.get_video_element()?;
         let caps_element = gstreamer::ElementFactory::make("capsfilter")
-            .name(&random_string("capsfilter"))
+            .name(random_string("capsfilter"))
             .build()
             .map_err(|_| {
                 GStreamerError::PipelineError("Failed to create capsfilter".to_string())
@@ -232,12 +232,12 @@ impl GSTVideoDevice {
         caps_element.set_property("caps", caps);
 
         let h264parse = gstreamer::ElementFactory::make("h264parse")
-            .name(&random_string("h264parse"))
+            .name(random_string("h264parse"))
             .build()
             .map_err(|_| GStreamerError::PipelineError("Failed to create h264parse".to_string()))?;
 
         let avdec_h264 = gstreamer::ElementFactory::make("avdec_h264")
-            .name(&random_string("avdec_h264"))
+            .name(random_string("avdec_h264"))
             .build()
             .map_err(|_| {
                 GStreamerError::PipelineError("Failed to create avdec_h264".to_string())
@@ -280,7 +280,7 @@ impl GSTVideoDevice {
     ) -> Result<gstreamer::Pipeline, GStreamerError> {
         let input = self.get_video_element()?;
         let caps_element = gstreamer::ElementFactory::make("capsfilter")
-            .name(&random_string("capsfilter"))
+            .name(random_string("capsfilter"))
             .build()
             .map_err(|_| {
                 GStreamerError::PipelineError("Failed to create capsfilter".to_string())
@@ -293,7 +293,7 @@ impl GSTVideoDevice {
         caps_element.set_property("caps", caps);
 
         let jpegdec = gstreamer::ElementFactory::make("jpegdec")
-            .name(&random_string("jpegdec"))
+            .name(random_string("jpegdec"))
             .build()
             .map_err(|_| GStreamerError::PipelineError("Failed to create jpegdec".to_string()))?;
 
@@ -326,7 +326,7 @@ impl GSTVideoDevice {
         tx: Arc<broadcast::Sender<Arc<Buffer>>>,
     ) -> Result<AppSink, GStreamerError> {
         let appsink = gstreamer::ElementFactory::make("appsink")
-            .name(&random_string("xraw-appsink"))
+            .name(random_string("xraw-appsink"))
             .build()
             .map_err(|_| GStreamerError::PipelineError("Failed to create appsink".to_string()))?;
         let appsink = appsink
