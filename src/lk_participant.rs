@@ -1,5 +1,5 @@
+use crate::media_device::GStreamerError;
 use crate::utils::random_string;
-use crate::video_device::GStreamerError;
 use crate::video_stream::GstVideoStream;
 use gstreamer::Buffer;
 use livekit::options::TrackPublishOptions;

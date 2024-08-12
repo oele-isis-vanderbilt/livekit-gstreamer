@@ -1,4 +1,4 @@
-use crate::video_device::{run_pipeline, GSTVideoDevice, GStreamerError};
+use crate::media_device::{run_pipeline, GSTMediaDevice, GStreamerError};
 use gstreamer::{prelude::*, Buffer, Pipeline};
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -9,7 +9,7 @@ struct StreamHandle {
     frame_tx: broadcast::Sender<Arc<Buffer>>,
     task: tokio::task::JoinHandle<Result<(), GStreamerError>>,
     pipeline: Pipeline,
-    device: GSTVideoDevice,
+    device: GSTMediaDevice,
 }
 
 #[derive(Debug, Clone)]
@@ -56,10 +56,10 @@ impl GstVideoStream {
         let (frame_tx, _) = broadcast::channel::<Arc<Buffer>>(1);
         let (close_tx, _) = broadcast::channel::<()>(1);
 
-        let device = GSTVideoDevice::from_device_path(self.publish_options.device_id.as_str())?;
+        let device = GSTMediaDevice::from_device_path(self.publish_options.device_id.as_str())?;
 
         let frame_tx_arc = Arc::new(frame_tx.clone());
-        let pipeline = device.pipeline(
+        let pipeline = device.video_pipeline(
             &self.publish_options.codec,
             self.publish_options.width,
             self.publish_options.height,

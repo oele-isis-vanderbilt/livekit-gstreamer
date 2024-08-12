@@ -9,19 +9,21 @@ use tokio::sync::broadcast;
 
 use crate::utils::random_string;
 
-const SUPPORTED_CODECS: [&str; 2] = ["video/x-h264", "image/jpeg"];
-const FRAME_FORMAT: &str = "I420";
+const SUPPORTED_VIDEO_CODECS: [&str; 2] = ["video/x-h264", "image/jpeg"];
+const SUPPORTED_AUDIO_CODECS: [&str; 1] = ["audio/x-raw"];
+const VIDEO_FRAME_FORMAT: &str = "I420";
 
 static GLOBAL_DEVICE_MONITOR: Lazy<Arc<Mutex<DeviceMonitor>>> = Lazy::new(|| {
     let monitor = DeviceMonitor::new();
     monitor.add_filter(Some("Video/Source"), None);
+    monitor.add_filter(Some("Audio/Source"), None);
     if let Err(err) = monitor.start() {
         eprintln!("Failed to start global device monitor: {:?}", err);
     }
     Arc::new(Mutex::new(monitor))
 });
 
-fn get_gst_device(path: &str) -> Option<Device> {
+pub fn get_gst_device(path: &str) -> Option<Device> {
     let device_monitor = GLOBAL_DEVICE_MONITOR.clone();
     let device_monitor = device_monitor.lock().unwrap();
     let device = device_monitor.devices().into_iter().find(|d| {
@@ -44,7 +46,7 @@ fn get_gst_device(path: &str) -> Option<Device> {
 /// A struct representing a GStreamer device
 /// This implementation assumes that GStreamer is initialized elsewhere
 #[derive(Debug, Clone)]
-pub struct GSTVideoDevice {
+pub struct GSTMediaDevice {
     pub display_name: String,
     #[allow(dead_code)]
     pub device_class: String,
@@ -79,14 +81,14 @@ pub async fn run_pipeline(
     Ok(())
 }
 
-impl GSTVideoDevice {
+impl GSTMediaDevice {
     pub fn from_device_path(path: &str) -> Result<Self, GStreamerError> {
         let device = get_gst_device(path);
         let device =
             device.ok_or_else(|| GStreamerError::DeviceError("No device found".to_string()))?;
         let display_name: String = device.display_name().into();
 
-        let device = GSTVideoDevice {
+        let device = GSTMediaDevice {
             display_name,
             device_class: device.device_class().into(),
             device_id: path.into(),
@@ -94,45 +96,72 @@ impl GSTVideoDevice {
         Ok(device)
     }
 
-    pub fn capabilities(&self) -> Vec<VideoCapability> {
+    pub fn capabilities(&self) -> Vec<MediaCapability> {
         let device = get_gst_device(&self.device_id).unwrap();
 
         let caps = device.caps().unwrap();
-        caps.iter()
-            .map(|s| {
-                let structure = s;
-                let width = structure.get::<i32>("width").unwrap();
-                let height = structure.get::<i32>("height").unwrap();
-                let mut framerates = vec![];
-                if let Ok(framerate_fields) = structure.get::<gstreamer::List>("framerate") {
-                    let frates: Vec<i32> = framerate_fields
-                        .iter()
-                        .map(|f| {
-                            let f = f.get::<gstreamer::Fraction>();
-                            match f {
-                                Ok(f) => f.numer() / f.denom(),
-                                Err(_) => 0,
-                            }
+        if self.device_class == "Video/Source" {
+            caps.iter()
+                .map(|s| {
+                    let structure = s;
+                    let width = structure.get::<i32>("width").unwrap();
+                    let height = structure.get::<i32>("height").unwrap();
+                    let mut framerates = vec![];
+                    if let Ok(framerate_fields) = structure.get::<gstreamer::List>("framerate") {
+                        let frates: Vec<i32> = framerate_fields
+                            .iter()
+                            .map(|f| {
+                                let f = f.get::<gstreamer::Fraction>();
+                                match f {
+                                    Ok(f) => f.numer() / f.denom(),
+                                    Err(_) => 0,
+                                }
+                            })
+                            .collect();
+                        framerates.extend(frates);
+                    } else if let Ok(framerate) = structure.get::<gstreamer::Fraction>("framerate")
+                    {
+                        framerates.push(framerate.numer() / framerate.denom());
+                    }
+
+                    let codec = structure.name().to_string();
+
+                    MediaCapability::Video(VideoCapability {
+                        width,
+                        height,
+                        framerates,
+                        codec,
+                    })
+                })
+                .collect()
+        } else {
+            caps.iter()
+                .map(|s| {
+                    let structure = s;
+                    println!("{:?}", structure);
+                    let channels = structure.get::<i32>("channels").unwrap();
+                    if let Ok(framerate_fields) = structure.get::<gstreamer::IntRange<i32>>("rate")
+                    {
+                        let codec = structure.name().to_string();
+
+                        MediaCapability::Audio(AudioCapability {
+                            channels,
+                            framerate: (framerate_fields.min(), framerate_fields.max()),
+                            codec,
                         })
-                        .collect();
-                    framerates.extend(frates);
-                } else if let Ok(framerate) = structure.get::<gstreamer::Fraction>("framerate") {
-                    framerates.push(framerate.numer() / framerate.denom());
-                }
-
-                let codec = structure.name().to_string();
-
-                VideoCapability {
-                    width,
-                    height,
-                    framerates,
-                    codec,
-                }
-            })
-            .collect()
+                    } else {
+                        MediaCapability::Audio(AudioCapability {
+                            channels,
+                            framerate: (0, 0),
+                            codec: "audio/x-raw".to_string(),
+                        })
+                    }
+                })
+                .collect()
+        }
     }
 
-    pub fn pipeline(
+    pub fn video_pipeline(
         &self,
         codec: &str,
         width: i32,
@@ -140,14 +169,14 @@ impl GSTVideoDevice {
         framerate: i32,
         tx: Arc<broadcast::Sender<Arc<Buffer>>>,
     ) -> Result<gstreamer::Pipeline, GStreamerError> {
-        if !SUPPORTED_CODECS.contains(&codec) {
+        if !SUPPORTED_VIDEO_CODECS.contains(&codec) {
             return Err(GStreamerError::PipelineError(format!(
                 "Unsupported codec {}",
                 codec
             )));
         }
 
-        let can_support = self.supports(codec, width, height, framerate);
+        let can_support = self.supports_video(codec, width, height, framerate);
         if !can_support {
             return Err(GStreamerError::PipelineError(
                 "Device does not support requested configuration".to_string(),
@@ -166,13 +195,45 @@ impl GSTVideoDevice {
         ))
     }
 
-    pub fn supports(&self, codec: &str, width: i32, height: i32, framerate: i32) -> bool {
+    pub fn supports_video(&self, codec: &str, width: i32, height: i32, framerate: i32) -> bool {
         let caps = self.capabilities();
+        if self.device_class == "Audio/Source" {
+            return false;
+        }
+        let caps = caps
+            .iter()
+            .filter_map(|c| match c {
+                MediaCapability::Video(c) => Some(c),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
         caps.iter().any(|c| {
             c.codec == codec
                 && c.width == width
                 && c.height == height
                 && c.framerates.contains(&framerate)
+        })
+    }
+
+    pub fn supports_audio(&self, codec: &str, channels: i32, framerate: i32) -> bool {
+        let caps = self.capabilities();
+        if self.device_class == "Video/Source" {
+            return false;
+        }
+        let caps = caps
+            .iter()
+            .filter_map(|c| match c {
+                MediaCapability::Audio(c) => Some(c),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        caps.iter().any(|c| {
+            c.codec == codec
+                && c.channels == channels
+                && c.framerate.0 <= framerate
+                && c.framerate.1 >= framerate
         })
     }
 
@@ -194,12 +255,12 @@ impl GSTVideoDevice {
         let caps = gstreamer::Caps::builder("video/x-raw")
             .field("width", width)
             .field("height", height)
-            .field("format", FRAME_FORMAT)
+            .field("format", VIDEO_FRAME_FORMAT)
             .field("framerate", gstreamer::Fraction::new(framerate, 1))
             .build();
         caps_element.set_property("caps", caps);
 
-        let sink = self.broadcast_appsink(tx)?;
+        let sink = self.video_broadcast_appsink(tx)?;
 
         let pipeline = gstreamer::Pipeline::with_name(&random_string("stream-xraw"));
         pipeline
@@ -243,7 +304,7 @@ impl GSTVideoDevice {
                 GStreamerError::PipelineError("Failed to create avdec_h264".to_string())
             })?;
 
-        let appsink = self.broadcast_appsink(tx)?;
+        let appsink = self.video_broadcast_appsink(tx)?;
 
         let pipeline = gstreamer::Pipeline::with_name(&random_string("stream-h264"));
 
@@ -297,7 +358,7 @@ impl GSTVideoDevice {
             .build()
             .map_err(|_| GStreamerError::PipelineError("Failed to create jpegdec".to_string()))?;
 
-        let appsink = self.broadcast_appsink(tx)?;
+        let appsink = self.video_broadcast_appsink(tx)?;
 
         let pipeline = gstreamer::Pipeline::with_name(&random_string("stream-jpeg"));
 
@@ -321,7 +382,7 @@ impl GSTVideoDevice {
         Ok(element)
     }
 
-    fn broadcast_appsink(
+    fn video_broadcast_appsink(
         &self,
         tx: Arc<broadcast::Sender<Arc<Buffer>>>,
     ) -> Result<AppSink, GStreamerError> {
@@ -358,6 +419,8 @@ impl GSTVideoDevice {
 
         Ok(appsink)
     }
+
+    fn audio_xraw_app_sink() {}
 }
 
 #[derive(Debug, Clone)]
@@ -366,6 +429,24 @@ pub struct VideoCapability {
     pub height: i32,
     pub framerates: Vec<i32>,
     pub codec: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct AudioCapability {
+    pub channels: i32,
+    pub framerate: (i32, i32),
+    pub codec: String,
+}
+
+pub enum AudioFormas {
+    S16LE,
+    S32LE,
+}
+
+#[derive(Debug, Clone)]
+pub enum MediaCapability {
+    Video(VideoCapability),
+    Audio(AudioCapability),
 }
 
 #[derive(Debug, Clone, Error)]
@@ -384,7 +465,7 @@ mod tests {
     fn test_from_path() {
         gstreamer::init().unwrap();
         let path = "/dev/video4";
-        let device = GSTVideoDevice::from_device_path(path);
+        let device = GSTMediaDevice::from_device_path(path);
         assert!(device.is_ok());
         let device = device.unwrap();
         println!("Device: {:?}", device);
