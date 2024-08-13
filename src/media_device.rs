@@ -46,7 +46,7 @@ pub fn get_gst_device(path: &str) -> Option<Device> {
 /// A struct representing a GStreamer device
 /// This implementation assumes that GStreamer is initialized elsewhere
 #[derive(Debug, Clone)]
-pub struct GSTMediaDevice {
+pub struct GstMediaDevice {
     pub display_name: String,
     #[allow(dead_code)]
     pub device_class: String,
@@ -81,14 +81,14 @@ pub async fn run_pipeline(
     Ok(())
 }
 
-impl GSTMediaDevice {
+impl GstMediaDevice {
     pub fn from_device_path(path: &str) -> Result<Self, GStreamerError> {
         let device = get_gst_device(path);
         let device =
             device.ok_or_else(|| GStreamerError::DeviceError("No device found".to_string()))?;
         let display_name: String = device.display_name().into();
 
-        let device = GSTMediaDevice {
+        let device = GstMediaDevice {
             display_name,
             device_class: device.device_class().into(),
             device_id: path.into(),
@@ -169,6 +169,12 @@ impl GSTMediaDevice {
         framerate: i32,
         tx: Arc<broadcast::Sender<Arc<Buffer>>>,
     ) -> Result<gstreamer::Pipeline, GStreamerError> {
+        if self.device_class == "Audio/Source" {
+            return Err(GStreamerError::PipelineError(
+                "Device is an audio source".to_string(),
+            ));
+        }
+
         if !SUPPORTED_VIDEO_CODECS.contains(&codec) {
             return Err(GStreamerError::PipelineError(format!(
                 "Unsupported codec {}",
@@ -193,6 +199,75 @@ impl GSTMediaDevice {
         Err(GStreamerError::PipelineError(
             "Failed to create pipeline".to_string(),
         ))
+    }
+
+    pub fn audio_pipeline(
+        &self,
+        codec: &str,
+        channels: i32,
+        framerate: i32,
+        tx: Arc<broadcast::Sender<Arc<Buffer>>>,
+    ) -> Result<gstreamer::Pipeline, GStreamerError> {
+        if self.device_class == "Video/Source" {
+            return Err(GStreamerError::PipelineError(
+                "Device is a video source".to_string(),
+            ));
+        }
+
+        if !SUPPORTED_AUDIO_CODECS.contains(&codec) {
+            return Err(GStreamerError::PipelineError(format!(
+                "Unsupported codec {}",
+                codec
+            )));
+        }
+
+        let can_support = self.supports_audio(codec, channels, framerate);
+        if !can_support {
+            return Err(GStreamerError::PipelineError(
+                "Device does not support requested configuration".to_string(),
+            ));
+        }
+
+        self.audio_xraw_pipeline(channels, framerate, tx)
+    }
+
+    fn audio_xraw_pipeline(
+        &self,
+        channels: i32,
+        framerate: i32,
+        tx: Arc<broadcast::Sender<Arc<Buffer>>>,
+    ) -> Result<gstreamer::Pipeline, GStreamerError> {
+        let audio_el = self.get_audio_element()?;
+
+        let caps = gstreamer::Caps::builder("audio/x-raw")
+            .field("format", "S16LE")
+            .field("channels", channels)
+            .field("rate", framerate)
+            .build();
+
+        let caps_element = gstreamer::ElementFactory::make("capsfilter")
+            .name(random_string("capsfilter"))
+            .build()
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to create capsfilter".to_string())
+            })?;
+
+        caps_element.set_property("caps", caps);
+
+        let broadcast_appsink = self.broadcast_appsink(tx, None)?;
+
+        let pipeline = gstreamer::Pipeline::with_name(&random_string("stream-audio-xraw"));
+
+        pipeline
+            .add_many(&[&audio_el, &caps_element, &broadcast_appsink.upcast_ref()])
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to add elements to pipeline".to_string())
+            })?;
+
+        gstreamer::Element::link_many(&[&audio_el, &caps_element, &broadcast_appsink.upcast_ref()])
+            .map_err(|_| GStreamerError::PipelineError("Failed to link elements".to_string()))?;
+
+        Ok(pipeline)
     }
 
     pub fn supports_video(&self, codec: &str, width: i32, height: i32, framerate: i32) -> bool {
@@ -260,7 +335,11 @@ impl GSTMediaDevice {
             .build();
         caps_element.set_property("caps", caps);
 
-        let sink = self.video_broadcast_appsink(tx)?;
+        let i420_caps = gstreamer::Caps::builder("video/x-raw")
+            .field("format", "I420")
+            .build();
+
+        let sink = self.broadcast_appsink(tx, Some(&i420_caps))?;
 
         let pipeline = gstreamer::Pipeline::with_name(&random_string("stream-xraw"));
         pipeline
@@ -304,7 +383,11 @@ impl GSTMediaDevice {
                 GStreamerError::PipelineError("Failed to create avdec_h264".to_string())
             })?;
 
-        let appsink = self.video_broadcast_appsink(tx)?;
+        let i420_caps = gstreamer::Caps::builder("video/x-raw")
+            .field("format", "I420")
+            .build();
+
+        let appsink = self.broadcast_appsink(tx, Some(&i420_caps))?;
 
         let pipeline = gstreamer::Pipeline::with_name(&random_string("stream-h264"));
 
@@ -358,7 +441,11 @@ impl GSTMediaDevice {
             .build()
             .map_err(|_| GStreamerError::PipelineError("Failed to create jpegdec".to_string()))?;
 
-        let appsink = self.video_broadcast_appsink(tx)?;
+        let i420_caps = gstreamer::Caps::builder("video/x-raw")
+            .field("format", "I420")
+            .build();
+
+        let appsink = self.broadcast_appsink(tx, Some(&i420_caps))?;
 
         let pipeline = gstreamer::Pipeline::with_name(&random_string("stream-jpeg"));
 
@@ -382,9 +469,19 @@ impl GSTMediaDevice {
         Ok(element)
     }
 
-    fn video_broadcast_appsink(
+    fn get_audio_element(&self) -> Result<gstreamer::Element, GStreamerError> {
+        let device = get_gst_device(&self.device_id).unwrap();
+        let random_source_name = random_string("source");
+        let element = device
+            .create_element(Some(random_source_name.as_str()))
+            .unwrap();
+        Ok(element)
+    }
+
+    fn broadcast_appsink(
         &self,
         tx: Arc<broadcast::Sender<Arc<Buffer>>>,
+        caps: Option<&gstreamer::Caps>,
     ) -> Result<AppSink, GStreamerError> {
         let appsink = gstreamer::ElementFactory::make("appsink")
             .name(random_string("xraw-appsink"))
@@ -394,9 +491,6 @@ impl GSTMediaDevice {
             .dynamic_cast::<AppSink>()
             .map_err(|_| GStreamerError::PipelineError("Failed to cast appsink".to_string()))?;
 
-        let i420_caps = gstreamer::Caps::builder("video/x-raw")
-            .field("format", "I420")
-            .build();
         appsink.set_callbacks(
             gstreamer_app::AppSinkCallbacks::builder()
                 .new_sample(move |sink| {
@@ -414,13 +508,12 @@ impl GSTMediaDevice {
                 })
                 .build(),
         );
-
-        appsink.set_caps(Some(&i420_caps));
+        if caps.is_some() {
+            appsink.set_caps(caps);
+        }
 
         Ok(appsink)
     }
-
-    fn audio_xraw_app_sink() {}
 }
 
 #[derive(Debug, Clone)]
@@ -465,7 +558,7 @@ mod tests {
     fn test_from_path() {
         gstreamer::init().unwrap();
         let path = "/dev/video4";
-        let device = GSTMediaDevice::from_device_path(path);
+        let device = GstMediaDevice::from_device_path(path);
         assert!(device.is_ok());
         let device = device.unwrap();
         println!("Device: {:?}", device);

@@ -2,7 +2,9 @@ use dotenvy::dotenv;
 use livekit::{Room, RoomEvent, RoomOptions};
 
 use livekit_api::access_token;
-use livekit_gstreamer::{GstVideoStream, LKParticipant, LKParticipantError, VideoPublishOptions};
+use livekit_gstreamer::{
+    GstMediaStream, LKParticipant, LKParticipantError, PublishOptions, VideoPublishOptions,
+};
 use std::{env, sync::Arc};
 
 #[tokio::main]
@@ -41,34 +43,34 @@ async fn main() -> Result<(), LKParticipantError> {
 
     // Note: Make sure to replace the device_id with the correct device and the codecs and resolutions are supported by the device
     // This can be checked by running `v4l2-ctl --list-formats-ext -d /dev/video0` for example or using gst-device-monitor-1.0 Video/Source
-    let mut stream1 = GstVideoStream::new(VideoPublishOptions {
+    let mut stream1 = GstMediaStream::new(PublishOptions::Video(VideoPublishOptions {
         codec: "image/jpeg".to_string(),
         width: 1920,
         height: 1080,
         framerate: 30,
         device_id: "/dev/video0".to_string(),
-    });
+    }));
 
-    let mut stream2 = GstVideoStream::new(VideoPublishOptions {
+    let mut stream2 = GstMediaStream::new(PublishOptions::Video(VideoPublishOptions {
         codec: "video/x-h264".to_string(),
         width: 1280,
         height: 720,
         framerate: 30,
         device_id: "/dev/video4".to_string(),
-    });
+    }));
 
     stream1.start().await.unwrap();
 
     stream2.start().await.unwrap();
 
     let mut participant = LKParticipant::new(new_room.clone());
-    participant.publish_video_stream(&mut stream1, None).await?;
+    participant.publish_stream(&mut stream1, None).await?;
     log::info!(
         "Published stream 1 from device: {}",
         stream1.get_device_name().unwrap()
     );
 
-    participant.publish_video_stream(&mut stream2, None).await?;
+    participant.publish_stream(&mut stream2, None).await?;
     log::info!(
         "Published stream 2 from device: {}",
         stream2.get_device_name().unwrap()

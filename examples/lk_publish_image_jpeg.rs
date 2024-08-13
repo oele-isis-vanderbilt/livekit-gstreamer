@@ -2,7 +2,9 @@ use dotenvy::dotenv;
 use livekit::{Room, RoomEvent, RoomOptions};
 
 use livekit_api::access_token;
-use livekit_gstreamer::{GstVideoStream, LKParticipant, LKParticipantError, VideoPublishOptions};
+use livekit_gstreamer::{
+    GstMediaStream, LKParticipant, LKParticipantError, PublishOptions, VideoPublishOptions,
+};
 use std::{env, sync::Arc};
 
 #[tokio::main]
@@ -35,19 +37,19 @@ async fn main() -> Result<(), LKParticipantError> {
     let new_room = Arc::new(room);
     // Note: Make sure to replace the device_id with the correct device and the codecs and resolutions are supported by the device
     // This can be checked by running `v4l2-ctl --list-formats-ext -d /dev/video0` for example or using gst-device-monitor-1.0 Video/Source
-    let mut stream = GstVideoStream::new(VideoPublishOptions {
+    let mut stream = GstMediaStream::new(PublishOptions::Video(VideoPublishOptions {
         codec: "image/jpeg".to_string(),
         width: 1920,
         height: 1080,
         framerate: 30,
         device_id: "/dev/video0".to_string(),
-    });
+    }));
 
     stream.start().await.unwrap();
 
     let mut participant = LKParticipant::new(new_room.clone());
 
-    participant.publish_video_stream(&mut stream, None).await?;
+    participant.publish_stream(&mut stream, None).await?;
 
     log::info!(
         "Connected to room: {} - {}",
