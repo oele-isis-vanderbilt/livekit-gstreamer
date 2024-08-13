@@ -2,7 +2,6 @@ use gstreamer::{prelude::*, Buffer};
 use gstreamer::{Device, DeviceMonitor};
 use gstreamer_app::AppSink;
 use once_cell::sync::Lazy;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
 use thiserror::Error;
@@ -114,7 +113,7 @@ fn get_device_path(device: &Device) -> Option<String> {
     }
 }
 
-pub fn get_devices_info() -> HashMap<String, Vec<MediaCapability>> {
+pub fn get_devices_info() -> Vec<MediaDeviceInfo> {
     let device_monitor = GLOBAL_DEVICE_MONITOR.clone();
     let device_monitor = device_monitor.lock().unwrap();
     let devices = device_monitor.devices();
@@ -123,7 +122,14 @@ pub fn get_devices_info() -> HashMap<String, Vec<MediaCapability>> {
         .filter_map(|d| {
             let path = get_device_path(&d)?;
             let caps = get_device_capabilities(&d);
-            Some((path, caps))
+            let display_name = d.display_name().into();
+            let class = d.device_class().into();
+            Some(MediaDeviceInfo {
+                device_path: path,
+                display_name,
+                capabilities: caps,
+                class,
+            })
         })
         .collect()
 }
@@ -135,7 +141,7 @@ pub struct GstMediaDevice {
     pub display_name: String,
     #[allow(dead_code)]
     pub device_class: String,
-    pub device_id: String,
+    pub device_path: String,
 }
 
 pub async fn run_pipeline(
@@ -176,13 +182,13 @@ impl GstMediaDevice {
         let device = GstMediaDevice {
             display_name,
             device_class: device.device_class().into(),
-            device_id: path.into(),
+            device_path: path.into(),
         };
         Ok(device)
     }
 
     pub fn capabilities(&self) -> Vec<MediaCapability> {
-        let device = get_gst_device(&self.device_id).unwrap();
+        let device = get_gst_device(&self.device_path).unwrap();
         get_device_capabilities(&device)
     }
 
@@ -486,7 +492,7 @@ impl GstMediaDevice {
     }
 
     fn get_video_element(&self) -> Result<gstreamer::Element, GStreamerError> {
-        let device = get_gst_device(&self.device_id).unwrap();
+        let device = get_gst_device(&self.device_path).unwrap();
         let random_source_name = random_string("source");
         let element = device
             .create_element(Some(random_source_name.as_str()))
@@ -495,7 +501,7 @@ impl GstMediaDevice {
     }
 
     fn get_audio_element(&self) -> Result<gstreamer::Element, GStreamerError> {
-        let device = get_gst_device(&self.device_id).unwrap();
+        let device = get_gst_device(&self.device_path).unwrap();
         let random_source_name = random_string("source");
         let element = device
             .create_element(Some(random_source_name.as_str()))
@@ -556,9 +562,12 @@ pub struct AudioCapability {
     pub codec: String,
 }
 
-pub enum AudioFormas {
-    S16LE,
-    S32LE,
+#[derive(Debug, Clone)]
+pub struct MediaDeviceInfo {
+    pub device_path: String,
+    pub display_name: String,
+    pub capabilities: Vec<MediaCapability>,
+    pub class: String,
 }
 
 #[derive(Debug, Clone)]
@@ -586,6 +595,6 @@ mod tests {
         let device = GstMediaDevice::from_device_path(path);
         assert!(device.is_ok());
         let device = device.unwrap();
-        assert_eq!(device.device_id, path);
+        assert_eq!(device.device_path, path);
     }
 }
