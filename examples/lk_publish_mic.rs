@@ -1,10 +1,10 @@
 use dotenvy::dotenv;
 use livekit::{Room, RoomEvent, RoomOptions};
+use livekit_gstreamer::{
+    AudioPublishOptions, GstMediaStream, LKParticipant, LKParticipantError, PublishOptions,
+};
 
 use livekit_api::access_token;
-use livekit_gstreamer::{
-    GstMediaStream, LKParticipant, LKParticipantError, PublishOptions, VideoPublishOptions,
-};
 use std::{env, sync::Arc};
 
 #[tokio::main]
@@ -20,8 +20,8 @@ async fn main() -> Result<(), LKParticipantError> {
     let api_secret = env::var("LIVEKIT_API_SECRET").expect("LIVEKIT_API_SECRET is not set");
 
     let token = access_token::AccessToken::with_api_key(&api_key, &api_secret)
-        .with_identity("rust-bot-h264")
-        .with_name("Rust Bot h264")
+        .with_identity("rust-bot-microphone")
+        .with_name("Rust Bot Microphone")
         .with_grants(access_token::VideoGrants {
             room_join: true,
             room: "DemoRoom".to_string(),
@@ -36,20 +36,18 @@ async fn main() -> Result<(), LKParticipantError> {
 
     let new_room = Arc::new(room);
 
-    // Note: Make sure to replace the device_id with the correct device and the codecs and resolutions are supported by the device
-    // This can be checked by running `v4l2-ctl --list-formats-ext -d /dev/video0` for example or using gst-device-monitor-1.0 Video/Source
-    let mut stream = GstMediaStream::new(PublishOptions::Video(VideoPublishOptions {
-        codec: "video/x-h264".to_string(),
-        width: 1920,
-        height: 1080,
-        framerate: 30,
-        device_id: "/dev/video4".to_string(),
-    }));
+    let publish_options = AudioPublishOptions {
+        codec: "audio/x-raw".to_string(),
+        device_id: "front:3".to_string(),
+        framerate: 32000,
+        channels: 2,
+    };
 
-    stream.start().await.unwrap();
+    let mut stream = GstMediaStream::new(PublishOptions::Audio(publish_options));
+
+    stream.start().await?;
 
     let mut participant = LKParticipant::new(new_room.clone());
-
     participant.publish_stream(&mut stream, None).await?;
 
     log::info!(

@@ -2,7 +2,10 @@ use dotenvy::dotenv;
 use livekit::{Room, RoomEvent, RoomOptions};
 
 use livekit_api::access_token;
-use livekit_gstreamer::{GstVideoStream, LKParticipant, LKParticipantError, VideoPublishOptions};
+use livekit_gstreamer::{
+    AudioPublishOptions, GstMediaStream, LKParticipant, LKParticipantError, PublishOptions,
+    VideoPublishOptions,
+};
 use std::{env, sync::Arc};
 
 #[tokio::main]
@@ -18,8 +21,8 @@ async fn main() -> Result<(), LKParticipantError> {
     let api_secret = env::var("LIVEKIT_API_SECRET").expect("LIVEKIT_API_SECRET is not set");
 
     let token = access_token::AccessToken::with_api_key(&api_key, &api_secret)
-        .with_identity("rust-bot-multivideo")
-        .with_name("Rust Bot MultiVideo")
+        .with_identity("rust-bot-multitrack")
+        .with_name("Rust Bot Multitrack")
         .with_grants(access_token::VideoGrants {
             room_join: true,
             room: "DemoRoom".to_string(),
@@ -41,37 +44,67 @@ async fn main() -> Result<(), LKParticipantError> {
 
     // Note: Make sure to replace the device_id with the correct device and the codecs and resolutions are supported by the device
     // This can be checked by running `v4l2-ctl --list-formats-ext -d /dev/video0` for example or using gst-device-monitor-1.0 Video/Source
-    let mut stream1 = GstVideoStream::new(VideoPublishOptions {
+    let mut stream1 = GstMediaStream::new(PublishOptions::Video(VideoPublishOptions {
         codec: "image/jpeg".to_string(),
         width: 1920,
         height: 1080,
         framerate: 30,
         device_id: "/dev/video0".to_string(),
-    });
+    }));
 
-    let mut stream2 = GstVideoStream::new(VideoPublishOptions {
+    let mut stream2 = GstMediaStream::new(PublishOptions::Video(VideoPublishOptions {
         codec: "video/x-h264".to_string(),
         width: 1280,
         height: 720,
         framerate: 30,
         device_id: "/dev/video4".to_string(),
-    });
+    }));
+
+    let mut stream3 = GstMediaStream::new(PublishOptions::Audio(AudioPublishOptions {
+        codec: "audio/x-raw".to_string(),
+        device_id: "front:3".to_string(),
+        framerate: 32000,
+        channels: 2,
+    }));
+
+    let mut stream4 = GstMediaStream::new(PublishOptions::Audio(AudioPublishOptions {
+        codec: "audio/x-raw".to_string(),
+        device_id: "hw:2".to_string(),
+        framerate: 48000,
+        channels: 1,
+    }));
 
     stream1.start().await.unwrap();
-
     stream2.start().await.unwrap();
+    stream3.start().await.unwrap();
+    stream4.start().await.unwrap();
 
     let mut participant = LKParticipant::new(new_room.clone());
-    participant.publish_video_stream(&mut stream1, None).await?;
+    participant.publish_stream(&mut stream1, None).await?;
     log::info!(
-        "Published stream 1 from device: {}",
+        "Published {} stream from device: {}",
+        stream1.kind(),
         stream1.get_device_name().unwrap()
     );
 
-    participant.publish_video_stream(&mut stream2, None).await?;
+    participant.publish_stream(&mut stream2, None).await?;
     log::info!(
-        "Published stream 2 from device: {}",
+        "Published {} stream from device: {}",
+        stream2.kind(),
         stream2.get_device_name().unwrap()
+    );
+    participant.publish_stream(&mut stream3, None).await?;
+    log::info!(
+        "Published {} stream from device: {}",
+        stream3.kind(),
+        stream3.get_device_name().unwrap()
+    );
+
+    participant.publish_stream(&mut stream4, None).await?;
+    log::info!(
+        "Published {} stream from device: {}",
+        stream4.kind(),
+        stream4.get_device_name().unwrap()
     );
 
     while let Some(msg) = room_rx.recv().await {
@@ -80,6 +113,8 @@ async fn main() -> Result<(), LKParticipantError> {
                 log::info!("Disconnected from room: {:?}", reason);
                 stream1.stop().await?;
                 stream2.stop().await?;
+                stream3.stop().await?;
+                stream4.stop().await?;
                 break;
             }
             _ => {

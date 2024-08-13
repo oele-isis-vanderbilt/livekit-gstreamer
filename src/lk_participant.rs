@@ -1,14 +1,17 @@
+use crate::media_device::GStreamerError;
+use crate::media_stream::{GstMediaStream, PublishOptions};
 use crate::utils::random_string;
-use crate::video_device::GStreamerError;
-use crate::video_stream::GstVideoStream;
 use gstreamer::Buffer;
 use livekit::options::TrackPublishOptions;
-use livekit::track::{LocalTrack, LocalVideoTrack, TrackSource};
+use livekit::track::{LocalAudioTrack, LocalTrack, LocalVideoTrack, TrackSource};
+use livekit::webrtc::audio_source::native::NativeAudioSource;
 use livekit::webrtc::prelude::{
-    I420Buffer, RtcVideoSource, VideoFrame, VideoResolution, VideoRotation,
+    AudioFrame, I420Buffer, RtcAudioSource, RtcVideoSource, VideoFrame, VideoResolution,
+    VideoRotation,
 };
 use livekit::webrtc::video_source::native::NativeVideoSource;
 use livekit::{Room, RoomError};
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -21,6 +24,8 @@ pub enum LKParticipantError {
     GStreamerError(#[from] GStreamerError),
     #[error("Livekit error: {0}")]
     LivekitError(#[from] RoomError),
+    #[error("Streaming error: {0}")]
+    StreamingError(String),
 }
 
 pub struct LKParticipant {
@@ -29,7 +34,7 @@ pub struct LKParticipant {
 }
 
 struct TrackHandle {
-    track: LocalVideoTrack,
+    track: LocalTrack,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -41,9 +46,9 @@ impl LKParticipant {
         }
     }
 
-    pub async fn publish_video_stream(
+    pub async fn publish_stream(
         &mut self,
-        stream: &mut GstVideoStream,
+        stream: &mut GstMediaStream,
         track_name: Option<String>,
     ) -> Result<String, LKParticipantError> {
         if !stream.has_started() {
@@ -53,38 +58,105 @@ impl LKParticipant {
         let (frames_rx, close_rx) = stream.subscribe().unwrap();
         let details = stream.details().unwrap();
         let track_name = track_name.unwrap_or(stream.get_device_name().unwrap());
-        let rtc_source = NativeVideoSource::new(VideoResolution {
-            width: details.width as u32,
-            height: details.height as u32,
-        });
 
-        let track = LocalVideoTrack::create_video_track(
-            &track_name,
-            RtcVideoSource::Native(rtc_source.clone()),
-        );
+        match details {
+            PublishOptions::Video(details) => {
+                let rtc_source = NativeVideoSource::new(VideoResolution {
+                    width: details.width as u32,
+                    height: details.height as u32,
+                });
 
-        let track_sid = random_string("track");
+                let track = LocalVideoTrack::create_video_track(
+                    &track_name,
+                    RtcVideoSource::Native(rtc_source.clone()),
+                );
 
-        let task = tokio::spawn(Self::track_task(close_rx, frames_rx, rtc_source.clone()));
+                let track_sid = random_string("video-track");
 
-        self.room
-            .local_participant()
-            .publish_track(
-                LocalTrack::Video(track.clone()),
-                TrackPublishOptions {
-                    source: TrackSource::Camera,
-                    ..Default::default()
-                },
-            )
-            .await?;
+                let task = tokio::spawn(Self::video_track_task(
+                    close_rx,
+                    frames_rx,
+                    rtc_source.clone(),
+                ));
 
-        self.published_tracks
-            .insert(track_sid.clone(), TrackHandle { track, task });
+                self.room
+                    .local_participant()
+                    .publish_track(
+                        LocalTrack::Video(track.clone()),
+                        TrackPublishOptions {
+                            source: TrackSource::Camera,
+                            ..Default::default()
+                        },
+                    )
+                    .await?;
 
-        Ok(track_sid)
+                self.published_tracks.insert(
+                    track_sid.clone(),
+                    TrackHandle {
+                        track: LocalTrack::Video(track),
+                        task,
+                    },
+                );
+
+                Ok(track_sid)
+            }
+            PublishOptions::Audio(details) => {
+                let rtc_source = NativeAudioSource::new(
+                    Default::default(),
+                    details.framerate as u32,
+                    details.channels as u32,
+                    None,
+                );
+
+                let track = LocalAudioTrack::create_audio_track(
+                    &track_name,
+                    RtcAudioSource::Native(rtc_source.clone()),
+                );
+
+                let track_sid = random_string("audio-track");
+
+                let task = tokio::spawn(Self::audio_track_task(
+                    close_rx,
+                    frames_rx,
+                    rtc_source.clone(),
+                ));
+
+                self.room
+                    .local_participant()
+                    .publish_track(
+                        LocalTrack::Audio(track.clone()),
+                        TrackPublishOptions {
+                            source: TrackSource::Microphone,
+                            ..Default::default()
+                        },
+                    )
+                    .await?;
+
+                self.published_tracks.insert(
+                    track_sid.clone(),
+                    TrackHandle {
+                        track: LocalTrack::Audio(track),
+                        task,
+                    },
+                );
+
+                Ok(track_sid)
+            }
+        }
     }
 
-    async fn track_task(
+    pub async fn unpublish_track(&mut self, track_sid: &str) -> Result<(), LKParticipantError> {
+        if let Some(handle) = self.published_tracks.get(track_sid) {
+            self.room
+                .local_participant()
+                .unpublish_track(&handle.track.sid())
+                .await?;
+            handle.task.abort();
+        }
+        Ok(())
+    }
+
+    async fn video_track_task(
         mut close_rx: broadcast::Receiver<()>,
         mut frames_rx: broadcast::Receiver<Arc<Buffer>>,
         rtc_source: NativeVideoSource,
@@ -126,14 +198,34 @@ impl LKParticipant {
         }
     }
 
-    pub async fn unpublish_track(&mut self, track_sid: &str) -> Result<(), LKParticipantError> {
-        if let Some(handle) = self.published_tracks.get(track_sid) {
-            self.room
-                .local_participant()
-                .unpublish_track(&handle.track.sid())
-                .await?;
-            handle.task.abort();
+    async fn audio_track_task(
+        mut close_rx: broadcast::Receiver<()>,
+        mut frames_rx: broadcast::Receiver<Arc<Buffer>>,
+        rtc_source: NativeAudioSource,
+    ) {
+        loop {
+            tokio::select! {
+                    _ = close_rx.recv() => {
+                        break;
+                    }
+                    frame = frames_rx.recv() => {
+                        if let Ok(frame) = frame {
+                            let map = frame.map_readable().unwrap();
+                            let audio_data: &[i16] = unsafe {
+                                std::slice::from_raw_parts(map.as_ptr() as *const i16, map.size() / 2)
+                            };
+
+                            let samples_per_channel = audio_data.len() as u32 / rtc_source.num_channels();
+                            let audio_frame = AudioFrame {
+                                data: Cow::Borrowed(audio_data),
+                                sample_rate: rtc_source.sample_rate(),
+                                num_channels: rtc_source.num_channels(),
+                                samples_per_channel,
+                            };
+                            rtc_source.capture_frame(&audio_frame).await.unwrap();
+                    }
+                }
+            }
         }
-        Ok(())
     }
 }

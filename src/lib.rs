@@ -1,8 +1,8 @@
 pub mod lk_participant;
+pub mod media_device;
+pub mod media_stream;
 pub(crate) mod utils;
-pub mod video_device;
-pub mod video_stream;
 
 pub use lk_participant::*;
-pub use video_device::*;
-pub use video_stream::*;
+pub use media_device::*;
+pub use media_stream::*;
