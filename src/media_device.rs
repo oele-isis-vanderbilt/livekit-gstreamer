@@ -43,6 +43,97 @@ pub fn get_gst_device(path: &str) -> Option<Device> {
     device
 }
 
+fn get_device_capabilities(device: &Device) -> Vec<MediaCapability> {
+    let caps = device.caps().unwrap();
+    if device.device_class() == "Video/Source" {
+        caps.iter()
+            .map(|s| {
+                let structure = s;
+                let width = structure.get::<i32>("width").unwrap();
+                let height = structure.get::<i32>("height").unwrap();
+                let mut framerates = vec![];
+                if let Ok(framerate_fields) = structure.get::<gstreamer::List>("framerate") {
+                    let frates: Vec<i32> = framerate_fields
+                        .iter()
+                        .map(|f| {
+                            let f = f.get::<gstreamer::Fraction>();
+                            match f {
+                                Ok(f) => f.numer() / f.denom(),
+                                Err(_) => 0,
+                            }
+                        })
+                        .collect();
+                    framerates.extend(frates);
+                } else if let Ok(framerate) = structure.get::<gstreamer::Fraction>("framerate") {
+                    framerates.push(framerate.numer() / framerate.denom());
+                }
+
+                let codec = structure.name().to_string();
+
+                MediaCapability::Video(VideoCapability {
+                    width,
+                    height,
+                    framerates,
+                    codec,
+                })
+            })
+            .collect()
+    } else {
+        caps.iter()
+            .map(|s| {
+                let structure = s;
+                let channels = structure.get::<i32>("channels").unwrap();
+                if let Ok(framerate_fields) = structure.get::<gstreamer::IntRange<i32>>("rate") {
+                    let codec = structure.name().to_string();
+
+                    MediaCapability::Audio(AudioCapability {
+                        channels,
+                        framerates: (framerate_fields.min(), framerate_fields.max()),
+                        codec,
+                    })
+                } else {
+                    MediaCapability::Audio(AudioCapability {
+                        channels,
+                        framerates: (0, 0),
+                        codec: "audio/x-raw".to_string(),
+                    })
+                }
+            })
+            .collect()
+    }
+}
+
+fn get_device_path(device: &Device) -> Option<String> {
+    let props = device.properties()?;
+
+    if device.device_class() == "Audio/Source" {
+        props.get("api.alsa.path").ok()
+    } else {
+        props.get("api.v4l2.path").ok()
+    }
+}
+
+pub fn get_devices_info() -> Vec<MediaDeviceInfo> {
+    let device_monitor = GLOBAL_DEVICE_MONITOR.clone();
+    let device_monitor = device_monitor.lock().unwrap();
+    let devices = device_monitor.devices();
+    devices
+        .into_iter()
+        .filter_map(|d| {
+            let path = get_device_path(&d)?;
+            let caps = get_device_capabilities(&d);
+            let display_name = d.display_name().into();
+            let class = d.device_class().into();
+            Some(MediaDeviceInfo {
+                device_path: path,
+                display_name,
+                capabilities: caps,
+                device_class: class,
+            })
+        })
+        .collect()
+}
+
 /// A struct representing a GStreamer device
 /// This implementation assumes that GStreamer is initialized elsewhere
 #[derive(Debug, Clone)]
@@ -50,7 +141,7 @@ pub struct GstMediaDevice {
     pub display_name: String,
     #[allow(dead_code)]
     pub device_class: String,
-    pub device_id: String,
+    pub device_path: String,
 }
 
 pub async fn run_pipeline(
@@ -91,73 +182,14 @@ impl GstMediaDevice {
         let device = GstMediaDevice {
             display_name,
             device_class: device.device_class().into(),
-            device_id: path.into(),
+            device_path: path.into(),
         };
         Ok(device)
     }
 
     pub fn capabilities(&self) -> Vec<MediaCapability> {
-        let device = get_gst_device(&self.device_id).unwrap();
-
-        let caps = device.caps().unwrap();
-        if self.device_class == "Video/Source" {
-            caps.iter()
-                .map(|s| {
-                    let structure = s;
-                    let width = structure.get::<i32>("width").unwrap();
-                    let height = structure.get::<i32>("height").unwrap();
-                    let mut framerates = vec![];
-                    if let Ok(framerate_fields) = structure.get::<gstreamer::List>("framerate") {
-                        let frates: Vec<i32> = framerate_fields
-                            .iter()
-                            .map(|f| {
-                                let f = f.get::<gstreamer::Fraction>();
-                                match f {
-                                    Ok(f) => f.numer() / f.denom(),
-                                    Err(_) => 0,
-                                }
-                            })
-                            .collect();
-                        framerates.extend(frates);
-                    } else if let Ok(framerate) = structure.get::<gstreamer::Fraction>("framerate")
-                    {
-                        framerates.push(framerate.numer() / framerate.denom());
-                    }
-
-                    let codec = structure.name().to_string();
-
-                    MediaCapability::Video(VideoCapability {
-                        width,
-                        height,
-                        framerates,
-                        codec,
-                    })
-                })
-                .collect()
-        } else {
-            caps.iter()
-                .map(|s| {
-                    let structure = s;
-                    let channels = structure.get::<i32>("channels").unwrap();
-                    if let Ok(framerate_fields) = structure.get::<gstreamer::IntRange<i32>>("rate")
-                    {
-                        let codec = structure.name().to_string();
-
-                        MediaCapability::Audio(AudioCapability {
-                            channels,
-                            framerate: (framerate_fields.min(), framerate_fields.max()),
-                            codec,
-                        })
-                    } else {
-                        MediaCapability::Audio(AudioCapability {
-                            channels,
-                            framerate: (0, 0),
-                            codec: "audio/x-raw".to_string(),
-                        })
-                    }
-                })
-                .collect()
-        }
+        let device = get_gst_device(&self.device_path).unwrap();
+        get_device_capabilities(&device)
     }
 
     pub fn video_pipeline(
@@ -306,8 +338,8 @@ impl GstMediaDevice {
         caps.iter().any(|c| {
             c.codec == codec
                 && c.channels == channels
-                && c.framerate.0 <= framerate
-                && c.framerate.1 >= framerate
+                && c.framerates.0 <= framerate
+                && c.framerates.1 >= framerate
         })
     }
 
@@ -460,7 +492,7 @@ impl GstMediaDevice {
     }
 
     fn get_video_element(&self) -> Result<gstreamer::Element, GStreamerError> {
-        let device = get_gst_device(&self.device_id).unwrap();
+        let device = get_gst_device(&self.device_path).unwrap();
         let random_source_name = random_string("source");
         let element = device
             .create_element(Some(random_source_name.as_str()))
@@ -469,7 +501,7 @@ impl GstMediaDevice {
     }
 
     fn get_audio_element(&self) -> Result<gstreamer::Element, GStreamerError> {
-        let device = get_gst_device(&self.device_id).unwrap();
+        let device = get_gst_device(&self.device_path).unwrap();
         let random_source_name = random_string("source");
         let element = device
             .create_element(Some(random_source_name.as_str()))
@@ -526,13 +558,16 @@ pub struct VideoCapability {
 #[derive(Debug, Clone)]
 pub struct AudioCapability {
     pub channels: i32,
-    pub framerate: (i32, i32),
+    pub framerates: (i32, i32),
     pub codec: String,
 }
 
-pub enum AudioFormas {
-    S16LE,
-    S32LE,
+#[derive(Debug, Clone)]
+pub struct MediaDeviceInfo {
+    pub device_path: String,
+    pub display_name: String,
+    pub capabilities: Vec<MediaCapability>,
+    pub device_class: String,
 }
 
 #[derive(Debug, Clone)]
@@ -560,6 +595,6 @@ mod tests {
         let device = GstMediaDevice::from_device_path(path);
         assert!(device.is_ok());
         let device = device.unwrap();
-        assert_eq!(device.device_id, path);
+        assert_eq!(device.device_path, path);
     }
 }
