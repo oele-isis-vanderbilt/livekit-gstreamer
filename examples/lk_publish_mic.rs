@@ -38,9 +38,9 @@ async fn main() -> Result<(), LKParticipantError> {
 
     let publish_options = AudioPublishOptions {
         codec: "audio/x-raw".to_string(),
-        device_id: "hw:2".to_string(),
-        framerate: 48000,
-        channels: 1,
+        device_id: "front:3".to_string(),
+        framerate: 32000,
+        channels: 2,
     };
 
     let mut stream = GstMediaStream::new(PublishOptions::Audio(publish_options));
