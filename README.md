@@ -40,6 +40,8 @@ See the [examples directory](./examples/) for detailed usage examples:
 
 7. [`lk_publish_mic.rs`](examples/lk_publish_mic.rs): Streams audio from a local microphone to the livekit room.
 
+8. [`get_devices.rs`](examples/get_devices.rs): Get all the devices, by path and their capabilities to the livekit room.
+
 
 ## Funding Info
 This work is supported by the National Science Foundation under Grant No. DRL-2112635.
