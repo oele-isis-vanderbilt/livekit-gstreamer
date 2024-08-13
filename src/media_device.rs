@@ -259,12 +259,12 @@ impl GstMediaDevice {
         let pipeline = gstreamer::Pipeline::with_name(&random_string("stream-audio-xraw"));
 
         pipeline
-            .add_many(&[&audio_el, &caps_element, &broadcast_appsink.upcast_ref()])
+            .add_many([&audio_el, &caps_element, (broadcast_appsink.upcast_ref())])
             .map_err(|_| {
                 GStreamerError::PipelineError("Failed to add elements to pipeline".to_string())
             })?;
 
-        gstreamer::Element::link_many(&[&audio_el, &caps_element, &broadcast_appsink.upcast_ref()])
+        gstreamer::Element::link_many([&audio_el, &caps_element, (broadcast_appsink.upcast_ref())])
             .map_err(|_| GStreamerError::PipelineError("Failed to link elements".to_string()))?;
 
         Ok(pipeline)
