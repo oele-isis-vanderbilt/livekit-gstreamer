@@ -138,7 +138,6 @@ impl GstMediaDevice {
             caps.iter()
                 .map(|s| {
                     let structure = s;
-                    println!("{:?}", structure);
                     let channels = structure.get::<i32>("channels").unwrap();
                     if let Ok(framerate_fields) = structure.get::<gstreamer::IntRange<i32>>("rate")
                     {
@@ -561,8 +560,6 @@ mod tests {
         let device = GstMediaDevice::from_device_path(path);
         assert!(device.is_ok());
         let device = device.unwrap();
-        println!("Device: {:?}", device);
         assert_eq!(device.device_id, path);
-        println!("{:?}", device.capabilities());
     }
 }
