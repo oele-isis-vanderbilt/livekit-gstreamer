@@ -30,11 +30,15 @@ See the [examples directory](./examples/) for detailed usage examples:
 
 2. [`lk_publish_image_jpeg.rs`](examples/lk_publish_image_jpeg.rs): Streams a sequence of JPEG images, converting them to I420 format for publication to LiveKit.
 
-3. [`lk_publish_multitrack.rs`](examples/lk_publish_multitrack.rs): Publishes 2 video tracks to LiveKit, with the final video stream in I420 format.
+3. [`lk_publish_multitrack.rs`](examples/lk_publish_multitrack.rs): Publishes 2 video tracks to LiveKit, with the final video stream in I420 format and 2 audio tracks from microphones to the livekit room.
 
 4. [`lk_publish_one_minute.rs`](examples/lk_publish_one_minute.rs): Streams video for one minute, converting to I420 format before publishing to LiveKit.
 
-5. [`stream_subscribe.rs`](examples/stream_subscribe.rs): Subscribes to a local GStreamer media stream in I420 format, do anything with it that you want.
+5. [`stream_subscribe_video.rs`](examples/stream_subscribe_video.rs): Subscribes to a local GStreamer media stream in I420 format, do anything with it that you want.
+
+6. [`stream_subscribe_audio.rs`](examples/stream_subscribe_audio.rs): Subscribes to a local GStreamer media audio stream, do anything with it that you want.
+
+7. [`lk_publish_mic.rs`](examples/lk_publish_mic.rs): Streams audio from a local microphone to the livekit room.
 
 
 ## Funding Info
