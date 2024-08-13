@@ -128,7 +128,7 @@ pub fn get_devices_info() -> Vec<MediaDeviceInfo> {
                 device_path: path,
                 display_name,
                 capabilities: caps,
-                class,
+                device_class: class,
             })
         })
         .collect()
@@ -567,7 +567,7 @@ pub struct MediaDeviceInfo {
     pub device_path: String,
     pub display_name: String,
     pub capabilities: Vec<MediaCapability>,
-    pub class: String,
+    pub device_class: String,
 }
 
 #[derive(Debug, Clone)]

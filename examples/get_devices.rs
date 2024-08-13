@@ -6,11 +6,11 @@ fn main() {
     for device_info in devices {
         println!(
             "============== Media Device Info ({:?}|{:?}) ==============",
-            device_info.display_name, device_info.class
+            device_info.display_name, device_info.device_class
         );
         println!("Device path: {}", device_info.device_path);
         println!("Device name: {}", device_info.display_name);
-        println!("Device class: {}", device_info.class);
+        println!("Device class: {}", device_info.device_class);
         println!("Capabilities:");
         for capability in device_info.capabilities {
             println!("  {:?}", capability);
