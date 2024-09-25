@@ -11,6 +11,7 @@ async fn main() -> Result<(), GStreamerError> {
         device_id: "hw:2".to_string(),
         framerate: 32000,
         channels: 1,
+        selected_channel: None,
     };
 
     let mut stream = GstMediaStream::new(PublishOptions::Audio(publish_options));

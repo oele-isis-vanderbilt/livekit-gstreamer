@@ -65,6 +65,7 @@ async fn main() -> Result<(), LKParticipantError> {
         device_id: "front:3".to_string(),
         framerate: 32000,
         channels: 2,
+        selected_channel: None,
     }));
 
     let mut stream4 = GstMediaStream::new(PublishOptions::Audio(AudioPublishOptions {
@@ -72,6 +73,7 @@ async fn main() -> Result<(), LKParticipantError> {
         device_id: "hw:2".to_string(),
         framerate: 48000,
         channels: 1,
+        selected_channel: None,
     }));
 
     stream1.start().await.unwrap();

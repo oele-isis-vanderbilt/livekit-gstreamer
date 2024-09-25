@@ -101,12 +101,8 @@ impl LKParticipant {
                 Ok(track_sid)
             }
             PublishOptions::Audio(details) => {
-                let rtc_source = NativeAudioSource::new(
-                    Default::default(),
-                    details.framerate as u32,
-                    details.channels as u32,
-                    None,
-                );
+                let rtc_source =
+                    NativeAudioSource::new(Default::default(), details.framerate as u32, 1, None);
 
                 let track = LocalAudioTrack::create_audio_track(
                     &track_name,
@@ -214,7 +210,6 @@ impl LKParticipant {
                             let audio_data: &[i16] = unsafe {
                                 std::slice::from_raw_parts(map.as_ptr() as *const i16, map.size() / 2)
                             };
-
                             let samples_per_channel = audio_data.len() as u32 / rtc_source.num_channels();
                             let audio_frame = AudioFrame {
                                 data: Cow::Borrowed(audio_data),
