@@ -262,6 +262,112 @@ impl GstMediaDevice {
         self.audio_xraw_pipeline(channels, framerate, tx)
     }
 
+    pub fn deinterleaved_audio_pipeline(
+        &self,
+        codec: &str,
+        channels: i32,
+        selected_channel: i32,
+        framerate: i32,
+        tx: Arc<broadcast::Sender<Arc<Buffer>>>,
+    ) -> Result<gstreamer::Pipeline, GStreamerError> {
+        if self.device_class == "Video/Source" {
+            return Err(GStreamerError::PipelineError(
+                "Device is a video source".to_string(),
+            ));
+        }
+
+        if !SUPPORTED_AUDIO_CODECS.contains(&codec) {
+            return Err(GStreamerError::PipelineError(format!(
+                "Unsupported codec {}",
+                codec
+            )));
+        }
+
+        let can_support = self.supports_audio(codec, channels, framerate);
+        if !can_support {
+            return Err(GStreamerError::PipelineError(
+                "Device does not support requested configuration".to_string(),
+            ));
+        }
+
+        self.audio_deinterleaved_pipeline(selected_channel, channels, framerate, tx)
+    }
+
+    fn audio_deinterleaved_pipeline(
+        &self,
+        selected_channel: i32,
+        channels: i32,
+        framerate: i32,
+        tx: Arc<broadcast::Sender<Arc<Buffer>>>,
+    ) -> Result<gstreamer::Pipeline, GStreamerError> {
+        let audio_el = self.get_audio_element()?;
+
+        let caps = gstreamer::Caps::builder("audio/x-raw")
+            .field("format", "S16LE")
+            .field("channels", channels)
+            .field("rate", framerate)
+            .field("channel-mask", gstreamer::Bitmask::new((1 << channels) - 1))
+            .build();
+
+        let caps_element = gstreamer::ElementFactory::make("capsfilter")
+            .name(random_string("capsfilter"))
+            .build()
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to create capsfilter".to_string())
+            })?;
+
+        caps_element.set_property("caps", caps);
+
+        let deinterleave_element = gstreamer::ElementFactory::make("deinterleave")
+            .name(random_string("deinterleave"))
+            .build()
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to create deinterleave".to_string())
+            })?;
+
+        let queue = gstreamer::ElementFactory::make("queue")
+            .name(random_string("queue"))
+            .build()
+            .map_err(|_| GStreamerError::PipelineError("Failed to create queue".to_string()))?;
+
+        let broadcast_appsink = self.broadcast_appsink(tx, None)?;
+
+        let pipeline = gstreamer::Pipeline::with_name(&random_string("deinterleaved-audio-xraw"));
+
+        pipeline
+            .add_many([
+                &audio_el,
+                &caps_element,
+                &deinterleave_element,
+                &queue,
+                (broadcast_appsink.upcast_ref()),
+            ])
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to add elements to pipeline".to_string())
+            })?;
+
+        gstreamer::Element::link_many([&audio_el, &caps_element, &deinterleave_element])
+            .map_err(|_| GStreamerError::PipelineError("Failed to link elements".to_string()))?;
+
+        let cloned = queue.clone();
+
+        deinterleave_element.connect_pad_added(move |_, src_pad| {
+            let pad_name = src_pad.name();
+            if pad_name == format!("src_{}", selected_channel - 1) {
+                let queue_sink_pad = cloned.static_pad("sink").unwrap();
+                if queue_sink_pad.is_linked() {
+                    return;
+                }
+                src_pad.link(&queue_sink_pad).unwrap();
+            }
+        });
+
+        gstreamer::Element::link_many([&queue, (broadcast_appsink.upcast_ref())])
+            .map_err(|_| GStreamerError::PipelineError("Failed to link elements".to_string()))?;
+
+        Ok(pipeline)
+    }
+
     fn audio_xraw_pipeline(
         &self,
         channels: i32,

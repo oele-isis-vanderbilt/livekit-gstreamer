@@ -27,6 +27,7 @@ pub struct AudioPublishOptions {
     pub device_id: String,
     pub framerate: i32,
     pub channels: i32,
+    pub selected_channel: Option<i32>,
 }
 
 #[derive(Debug, Clone)]
@@ -95,12 +96,21 @@ impl GstMediaStream {
                 video_options.framerate,
                 frame_tx_arc.clone(),
             )?,
-            PublishOptions::Audio(audio_options) => device.audio_pipeline(
-                &audio_options.codec,
-                audio_options.channels,
-                audio_options.framerate,
-                frame_tx_arc.clone(),
-            )?,
+            PublishOptions::Audio(audio_options) => match audio_options.selected_channel {
+                Some(selected_channel) => device.deinterleaved_audio_pipeline(
+                    &audio_options.codec,
+                    audio_options.channels,
+                    selected_channel,
+                    audio_options.framerate,
+                    frame_tx_arc.clone(),
+                )?,
+                None => device.audio_pipeline(
+                    &audio_options.codec,
+                    audio_options.channels,
+                    audio_options.framerate,
+                    frame_tx_arc.clone(),
+                )?,
+            },
         };
 
         let pipline_task = tokio::spawn(run_pipeline(pipeline.clone(), close_tx.clone()));

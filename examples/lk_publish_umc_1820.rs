@@ -24,7 +24,7 @@ async fn main() -> Result<(), LKParticipantError> {
         .with_name("Rust Bot Microphone")
         .with_grants(access_token::VideoGrants {
             room_join: true,
-            room: "DemoRoom".to_string(),
+            room: "SyncFlow_lgkudk".to_string(),
             ..Default::default()
         })
         .to_jwt()
@@ -36,20 +36,36 @@ async fn main() -> Result<(), LKParticipantError> {
 
     let new_room = Arc::new(room);
 
-    let publish_options = AudioPublishOptions {
+    let publish_options1 = AudioPublishOptions {
         codec: "audio/x-raw".to_string(),
-        device_id: "front:3".to_string(),
-        framerate: 32000,
-        channels: 2,
-        selected_channel: None,
+        device_id: "hw:4".to_string(),
+        framerate: 96000,
+        channels: 10,
+        selected_channel: Some(1),
     };
 
-    let mut stream = GstMediaStream::new(PublishOptions::Audio(publish_options));
+    let publish_options2 = AudioPublishOptions {
+        codec: "audio/x-raw".to_string(),
+        device_id: "hw:4".to_string(),
+        framerate: 96000,
+        channels: 10,
+        selected_channel: Some(2),
+    };
 
-    stream.start().await?;
+    let mut stream1 = GstMediaStream::new(PublishOptions::Audio(publish_options1));
+
+    let mut stream2 = GstMediaStream::new(PublishOptions::Audio(publish_options2));
+
+    stream1.start().await?;
+    stream2.start().await?;
 
     let mut participant = LKParticipant::new(new_room.clone());
-    participant.publish_stream(&mut stream, None).await?;
+    participant
+        .publish_stream(&mut stream1, Some("UMC1820-Channel1".into()))
+        .await?;
+    participant
+        .publish_stream(&mut stream2, Some("UMC1820-Channel2".into()))
+        .await?;
 
     log::info!(
         "Connected to room: {} - {}",
@@ -61,7 +77,8 @@ async fn main() -> Result<(), LKParticipantError> {
         match msg {
             RoomEvent::Disconnected { reason } => {
                 log::info!("Disconnected from room: {:?}", reason);
-                stream.stop().await?;
+                stream1.stop().await?;
+                stream2.stop().await?;
                 break;
             }
             _ => {
