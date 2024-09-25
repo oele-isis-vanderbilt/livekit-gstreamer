@@ -441,11 +441,7 @@ impl GstMediaDevice {
             })
             .collect::<Vec<_>>();
 
-            caps.iter().any(|c| {
-            println!("{:?}", c);
-            println!("{:?}", framerate);
-            println!("{:?}", c.framerates.0 <= framerate);
-            println!("{:?}", c.framerates.1 >= framerate);
+        caps.iter().any(|c| {
             c.codec == codec
                 && c.channels == channels
                 && c.framerates.0 <= framerate
