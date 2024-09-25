@@ -32,7 +32,9 @@ pub fn get_gst_device(path: &str) -> Option<Device> {
         match props {
             // FixMe: This only works for v4l2 devices
             Some(props) => {
-                let path_prop = props.get::<Option<String>>("object.path");
+                let path_prop = props
+                    .get::<Option<String>>("object.path")
+                    .or_else(|_| props.get::<Option<String>>("device.path"));
                 path_prop
                     .is_ok_and(|path_prop| path_prop.is_some() && path_prop.unwrap().contains(path))
             }
