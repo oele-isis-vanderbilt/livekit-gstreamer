@@ -440,8 +440,8 @@ impl GstMediaDevice {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        println!("{:?}", caps);
-        caps.iter().any(|c| {
+
+            caps.iter().any(|c| {
             println!("{:?}", c);
             println!("{:?}", framerate);
             println!("{:?}", c.framerates.0 <= framerate);
