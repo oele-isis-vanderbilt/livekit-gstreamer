@@ -102,7 +102,7 @@ impl LKParticipant {
             }
             PublishOptions::Audio(details) => {
                 let rtc_source =
-                    NativeAudioSource::new(Default::default(), details.framerate as u32, 1, None);
+                    NativeAudioSource::new(Default::default(), details.framerate as u32, 1, 2000);
 
                 let track = LocalAudioTrack::create_audio_track(
                     &track_name,
