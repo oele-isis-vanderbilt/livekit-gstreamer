@@ -1210,6 +1210,7 @@ dependencies = [
  "log",
  "once_cell",
  "rand",
+ "serde",
  "thiserror",
  "tokio",
 ]
