@@ -1,5 +1,6 @@
 use crate::media_device::{run_pipeline, GStreamerError, GstMediaDevice};
 use gstreamer::{prelude::*, Buffer, Pipeline};
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
@@ -12,7 +13,7 @@ struct StreamHandle {
     device: GstMediaDevice,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VideoPublishOptions {
     pub codec: String,
     pub device_id: String,
@@ -21,7 +22,7 @@ pub struct VideoPublishOptions {
     pub framerate: i32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioPublishOptions {
     pub codec: String,
     pub device_id: String,
@@ -30,7 +31,7 @@ pub struct AudioPublishOptions {
     pub selected_channel: Option<i32>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PublishOptions {
     Video(VideoPublishOptions),
     Audio(AudioPublishOptions),
