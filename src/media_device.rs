@@ -108,11 +108,16 @@ fn get_device_capabilities(device: &Device) -> Vec<MediaCapability> {
 fn get_device_path(device: &Device) -> Option<String> {
     let props = device.properties()?;
 
-    if device.device_class() == "Audio/Source" {
+    let path = if device.device_class() == "Audio/Source" {
         props.get("api.alsa.path").ok()
     } else {
         props.get("api.v4l2.path").ok()
-    }
+    };
+
+    path.or_else(|| match props.get::<Option<String>>("device.path") {
+        Ok(path) => path,
+        Err(_) => None,
+    })
 }
 
 pub fn get_devices_info() -> Vec<MediaDeviceInfo> {
