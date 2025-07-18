@@ -42,6 +42,7 @@ async fn main() -> Result<(), LKParticipantError> {
         framerate: 96000,
         channels: 10,
         selected_channel: Some(1),
+        local_file_save_options: None,
     };
 
     let publish_options2 = AudioPublishOptions {
@@ -50,6 +51,7 @@ async fn main() -> Result<(), LKParticipantError> {
         framerate: 96000,
         channels: 10,
         selected_channel: Some(2),
+        local_file_save_options: None,
     };
 
     let mut stream1 = GstMediaStream::new(PublishOptions::Audio(publish_options1));

@@ -44,6 +44,7 @@ async fn main() -> Result<(), LKParticipantError> {
         height: 1080,
         framerate: 30,
         device_id: "/dev/video4".to_string(),
+        local_file_save_options: None,
     }));
 
     stream.start().await.unwrap();

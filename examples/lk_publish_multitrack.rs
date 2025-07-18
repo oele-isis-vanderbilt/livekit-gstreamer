@@ -50,6 +50,7 @@ async fn main() -> Result<(), LKParticipantError> {
         height: 1080,
         framerate: 30,
         device_id: "/dev/video0".to_string(),
+        local_file_save_options: None,
     }));
 
     let mut stream2 = GstMediaStream::new(PublishOptions::Video(VideoPublishOptions {
@@ -58,6 +59,7 @@ async fn main() -> Result<(), LKParticipantError> {
         height: 720,
         framerate: 30,
         device_id: "/dev/video4".to_string(),
+        local_file_save_options: None,
     }));
 
     let mut stream3 = GstMediaStream::new(PublishOptions::Audio(AudioPublishOptions {
@@ -66,6 +68,7 @@ async fn main() -> Result<(), LKParticipantError> {
         framerate: 32000,
         channels: 2,
         selected_channel: None,
+        local_file_save_options: None,
     }));
 
     let mut stream4 = GstMediaStream::new(PublishOptions::Audio(AudioPublishOptions {
@@ -74,6 +77,7 @@ async fn main() -> Result<(), LKParticipantError> {
         framerate: 48000,
         channels: 1,
         selected_channel: None,
+        local_file_save_options: None,
     }));
 
     stream1.start().await.unwrap();
