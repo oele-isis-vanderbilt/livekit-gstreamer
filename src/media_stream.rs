@@ -1,6 +1,6 @@
 use crate::media_device::{run_pipeline, GStreamerError, GstMediaDevice};
 use gstreamer::{prelude::*, Buffer, Pipeline};
-use serde::{Deserialize, Serialize};
+use serde::{de, Deserialize, Serialize};
 use std::{path::PathBuf, sync::Arc};
 use tokio::{fs, sync::broadcast};
 
@@ -119,7 +119,7 @@ impl GstMediaStream {
                         "{}-{}-{}-{}.mp4",
                         op_dir.join("video").to_string_lossy().replace(" ", "_"),
                         device.display_name.replace(" ", "_"),
-                        video_options.device_id.replace(" ", "_"),
+                        video_options.device_id.replace(" ", "_").replace("/", "_"),
                         chrono::Local::now().format("%Y-%m-%d-%H-%M-%S")
                     ));
                 }
@@ -137,7 +137,7 @@ impl GstMediaStream {
                 if let Some(local_file_save_options) = &audio_options.local_file_save_options {
                     let op_dir = create_dir(local_file_save_options).await?;
                     filename = Some(format!(
-                        "{}-{}-{}-{}.m4a",
+                        "{}-{}-{}-{}-{}.m4a",
                         op_dir.join("audio").to_string_lossy().replace(" ", "_"),
                         match audio_options.selected_channel {
                             Some(channel) => format!(
@@ -148,6 +148,7 @@ impl GstMediaStream {
                             None => device.display_name.replace(" ", "_"),
                         },
                         audio_options.device_id.replace(" ", "_"),
+                        audio_options.device_id.replace(" ", "_").replace("/", "_"),
                         chrono::Local::now().format("%Y-%m-%d-%H-%M-%S")
                     ));
                 }

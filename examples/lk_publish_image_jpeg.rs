@@ -43,8 +43,8 @@ async fn main() -> Result<(), LKParticipantError> {
     // This can be checked by running `v4l2-ctl --list-formats-ext -d /dev/video0` for example or using gst-device-monitor-1.0 Video/Source
     let mut stream = GstMediaStream::new(PublishOptions::Video(VideoPublishOptions {
         codec: "image/jpeg".to_string(),
-        width: 1920,
-        height: 1080,
+        width: 1280,
+        height: 720,
         framerate: 30,
         device_id: "/dev/video0".to_string(),
         local_file_save_options: Some(LocalFileSaveOptions {

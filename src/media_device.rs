@@ -683,6 +683,15 @@ impl GstMediaDevice {
             self.add_video_file_branch(&pipeline, &tee, path)?;
         }
 
+        pipeline
+            .iterate_elements()
+            .foreach(|e| {
+                let _ = e.sync_state_with_parent();
+            })
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to sync state with parent".to_string())
+            })?;
+
         Ok(pipeline)
     }
 
@@ -717,6 +726,11 @@ impl GstMediaDevice {
             .dynamic_cast::<AppSink>()
             .map_err(|_| GStreamerError::PipelineError("Failed to cast appsink".to_string()))?;
 
+        appsink.set_property("sync", &false);
+        appsink.set_property("emit-signals", &true);
+        appsink.set_property("drop", &true);
+        appsink.set_property("max-buffers", &1u32);
+
         appsink.set_callbacks(
             gstreamer_app::AppSinkCallbacks::builder()
                 .new_sample(move |sink| {
@@ -747,26 +761,83 @@ impl GstMediaDevice {
         tee: &gstreamer::Element,
         path: &str,
     ) -> Result<(), GStreamerError> {
-        let file_branch = gstreamer::parse::bin_from_description(
-            &format!(
-                concat!(
-                    "queue name=file-sink-queue ! ",
-                    "x264enc bitrate=3000 tune=zerolatency ! ",
-                    "h264parse ! mp4mux ! filesink location={} sync=false"
-                ),
-                path
-            ),
-            true,
-        )
-        .map_err(|_| GStreamerError::PipelineError("Failed to create file branch".to_string()))?;
+        let queue_file = gstreamer::ElementFactory::make("queue")
+            .name(random_string("file-queue"))
+            .build()
+            .map_err(|_| GStreamerError::PipelineError("queue".into()))?;
+
+        let convert = gstreamer::ElementFactory::make("videoconvert")
+            .name(random_string("file-videoconvert"))
+            .build()
+            .map_err(|_| GStreamerError::PipelineError("videoconvert".into()))?;
+
+        let format_filter = gstreamer::ElementFactory::make("capsfilter")
+            .name(random_string("file-capsfilter"))
+            .build()
+            .map_err(|_| GStreamerError::PipelineError("capsfilter".into()))?;
+        let caps = gstreamer::Caps::builder("video/x-raw")
+            .field("format", &"I420")
+            .build();
+        format_filter.set_property("caps", &caps);
+
+        let encoder = gstreamer::ElementFactory::make("x264enc")
+            .name(random_string("file-x264enc"))
+            .build()
+            .map_err(|_| GStreamerError::PipelineError("x264enc".into()))?;
+        encoder.set_property("bitrate", &3000u32);
+        encoder.set_property_from_str("tune", "zerolatency");
+
+        let parser = gstreamer::ElementFactory::make("h264parse")
+            .name(random_string("file-h264parse"))
+            .build()
+            .map_err(|_| GStreamerError::PipelineError("h264parse".into()))?;
+
+        let muxer = gstreamer::ElementFactory::make("mp4mux")
+            .name(random_string("file-mp4mux"))
+            .build()
+            .map_err(|_| GStreamerError::PipelineError("mp4mux".into()))?;
+
+        let filesink = gstreamer::ElementFactory::make("filesink")
+            .name(random_string("file-filesink"))
+            .build()
+            .map_err(|_| GStreamerError::PipelineError("filesink".into()))?;
+        filesink.set_property("location", &path);
+        filesink.set_property("sync", &false);
 
         pipeline
-            .add(&file_branch)
-            .map_err(|_| GStreamerError::PipelineError("Failed to add file branch".to_string()))?;
+            .add_many(&[
+                &queue_file,
+                &convert,
+                &format_filter,
+                &encoder,
+                &parser,
+                &muxer,
+                &filesink,
+            ])
+            .map_err(|_| GStreamerError::PipelineError("Failed to add file branch".into()))?;
 
-        tee.link(&file_branch).map_err(|_| {
-            GStreamerError::PipelineError("Failed to link tee to file branch".to_string())
+        gstreamer::Element::link_many(&[
+            &queue_file,
+            &convert,
+            &format_filter,
+            &encoder,
+            &parser,
+            &muxer,
+            &filesink,
+        ])
+        .map_err(|_| GStreamerError::PipelineError("Failed to link file branch".into()))?;
+
+        let tee_src_pad = tee
+            .request_pad_simple("src_%u")
+            .ok_or_else(|| GStreamerError::PipelineError("Failed to request tee pad".into()))?;
+        let queue_sink_pad = queue_file
+            .static_pad("sink")
+            .ok_or_else(|| GStreamerError::PipelineError("Queue has no sink pad".into()))?;
+
+        tee_src_pad.link(&queue_sink_pad).map_err(|_| {
+            GStreamerError::PipelineError("Failed to link tee to file branch".into())
         })?;
+
         Ok(())
     }
 
