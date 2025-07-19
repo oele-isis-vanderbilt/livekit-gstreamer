@@ -2,6 +2,8 @@ use gstreamer::{prelude::*, Buffer};
 use gstreamer::{Device, DeviceMonitor};
 use gstreamer_app::AppSink;
 use once_cell::sync::Lazy;
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 use thiserror::Error;
@@ -43,6 +45,13 @@ pub fn get_gst_device(path: &str) -> Option<Device> {
     });
 
     device
+}
+
+fn system_time_nanos() -> i64 {
+    let now = std::time::SystemTime::now();
+    now.duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as i64)
+        .unwrap_or(0)
 }
 
 fn get_device_capabilities(device: &Device) -> Vec<MediaCapability> {
@@ -141,6 +150,12 @@ pub fn get_devices_info() -> Vec<MediaDeviceInfo> {
         .collect()
 }
 
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
+struct FileSinkTiming {
+    start_time: Option<i64>,
+    end_time: Option<i64>,
+}
+
 /// A struct representing a GStreamer device
 /// This implementation assumes that GStreamer is initialized elsewhere
 #[derive(Debug, Clone)]
@@ -151,22 +166,165 @@ pub struct GstMediaDevice {
     pub device_path: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecordingMetadata {
+    pub filename: String,
+    pub parent_dir: String,
+    pub source: String,
+    pub media_type: String,
+    start_time: Option<i64>,
+    end_time: Option<i64>,
+    pub codec: String,
+    pub audio_channel: Option<i32>,
+}
+
+impl RecordingMetadata {
+    pub fn new(
+        filename: String,
+        parent_dir: String,
+        source: String,
+        media_type: String,
+        codec: String,
+        audio_channel: Option<i32>,
+    ) -> Self {
+        RecordingMetadata {
+            filename,
+            parent_dir,
+            source,
+            media_type,
+            start_time: None,
+            end_time: None,
+            codec,
+            audio_channel,
+        }
+    }
+
+    pub fn set_start_time(&mut self, time: i64) {
+        self.start_time = Some(time);
+    }
+
+    pub fn set_end_time(&mut self, time: i64) {
+        self.end_time = Some(time);
+    }
+
+    pub fn start_time(&self) -> Option<i64> {
+        self.start_time
+    }
+
+    pub fn end_time(&self) -> Option<i64> {
+        self.end_time
+    }
+
+    pub fn write_success(&self) -> Result<bool, GStreamerError> {
+        let parent_dir = PathBuf::from(&self.parent_dir);
+
+        let string_content = serde_json::to_string(&self).map_err(|e| {
+            GStreamerError::PipelineError(format!("Failed to serialize metadata: {}", e))
+        })?;
+
+        let metadata_file = format!("{}.json", self.filename);
+
+        std::fs::write(parent_dir.join(metadata_file), string_content).map_err(|e| {
+            GStreamerError::PipelineError(format!("Failed to write metadata: {}", e))
+        })?;
+
+        Ok(true)
+    }
+
+    pub fn write_error(&self, error: &str) -> Result<bool, GStreamerError> {
+        let parent_dir = PathBuf::from(&self.parent_dir);
+
+        let error_object = serde_json::json!({
+            "error": error,
+            "filename": self.filename,
+            "parent_dir": self.parent_dir,
+            "source": self.source,
+            "media_type": self.media_type,
+            "codec": self.codec,
+            "audio_channel": self.audio_channel,
+        });
+
+        let string_content = serde_json::to_string(&error_object).map_err(|e| {
+            GStreamerError::PipelineError(format!("Failed to serialize error metadata: {}", e))
+        })?;
+
+        let metadata_file = format!("{}.error.json", self.filename);
+
+        std::fs::write(parent_dir.join(metadata_file), string_content).map_err(|e| {
+            GStreamerError::PipelineError(format!("Failed to write metadata: {}", e))
+        })?;
+
+        Ok(true)
+    }
+}
+
 pub async fn run_pipeline(
     pipeline: gstreamer::Pipeline,
     tx: broadcast::Sender<()>,
+    mut recording_metadata: Option<RecordingMetadata>,
 ) -> Result<(), GStreamerError> {
+    let mut filesink = None;
+    let timing = Arc::new(Mutex::new(FileSinkTiming::default()));
+
+    if recording_metadata.is_some() {
+        filesink = pipeline.iterate_elements().find(|e| {
+            let factory = e.factory();
+            factory
+                .map(|f| f.name() == gstreamer::glib::GString::from("filesink"))
+                .unwrap_or(false)
+        });
+
+        if let Some(filesink) = filesink {
+            let timing_clone = timing.clone();
+            if let Some(sink_pad) = filesink.static_pad("sink") {
+                sink_pad.add_probe(gstreamer::PadProbeType::BUFFER, move |_, info| {
+                    if let Some(gstreamer::PadProbeData::Buffer(ref buffer)) = info.data {
+                        if let Some(pts) = buffer.pts() {
+                            let mut timing = timing_clone.lock().unwrap();
+                            if timing.start_time.is_none() {
+                                timing.start_time = Some(system_time_nanos());
+                            }
+                            timing.end_time = Some(system_time_nanos());
+                        }
+                    }
+                    gstreamer::PadProbeReturn::Ok
+                });
+            }
+        }
+    }
+
     pipeline.set_state(gstreamer::State::Playing).unwrap();
     let bus = pipeline.bus().unwrap();
     for msg in bus.iter_timed(gstreamer::ClockTime::NONE) {
         use gstreamer::MessageView;
         match msg.view() {
-            MessageView::Eos(..) => break,
+            MessageView::Eos(..) => {
+                if let Some(metadata) = recording_metadata.as_mut() {
+                    metadata.set_end_time(system_time_nanos());
+                    // Get more reliable timestamps from the Filesink
+                    if let Some(start_time) = timing.lock().unwrap().start_time {
+                        metadata.set_start_time(start_time);
+                    }
+                    if let Some(end_time) = timing.lock().unwrap().end_time {
+                        metadata.set_end_time(end_time);
+                    }
+                    let _ = metadata.write_success();
+                }
+                break;
+            }
             MessageView::Error(err) => {
-                eprintln!("Error: {:?}", err.error());
+                if let Some(metadata) = recording_metadata.as_mut() {
+                    let _ =
+                        metadata.write_error(&format!("Pipeline error: {}", err.error().message()));
+                }
                 break;
             }
             MessageView::StateChanged(e) => {
-                // Check if we need to stop the pipeline
+                if let Some(metadata) = recording_metadata.as_mut() {
+                    if e.current() == gstreamer::State::Playing {
+                        metadata.set_start_time(system_time_nanos());
+                    }
+                }
                 if e.current() == gstreamer::State::Null {
                     break;
                 }

@@ -19,6 +19,7 @@ livekit = { git="https://github.com/livekit/rust-sdks.git", package="livekit", f
 once_cell = "1.19.0"
 rand = "0.8.5"
 serde = { version = "1.0.211", features = ["derive"] }
+serde_json = "1.0.141"
 thiserror = "1.0.63"
 tokio = { version = "1", features = ["full"] }
 

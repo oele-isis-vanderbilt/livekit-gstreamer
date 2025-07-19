@@ -1,7 +1,13 @@
-use crate::media_device::{run_pipeline, GStreamerError, GstMediaDevice};
+use crate::{
+    media_device::{run_pipeline, GStreamerError, GstMediaDevice},
+    RecordingMetadata,
+};
 use gstreamer::{prelude::*, Buffer, Pipeline};
-use serde::{de, Deserialize, Serialize};
-use std::{path::PathBuf, sync::Arc};
+use serde::{Deserialize, Serialize};
+use std::{
+    path::{self, PathBuf},
+    sync::Arc,
+};
 use tokio::{fs, sync::broadcast};
 
 #[derive(Debug)]
@@ -109,19 +115,34 @@ impl GstMediaStream {
         };
 
         let frame_tx_arc = Arc::new(frame_tx.clone());
+        let mut metadata = None;
 
         let pipeline = match &self.publish_options {
             PublishOptions::Video(video_options) => {
                 let mut filename = None;
                 if let Some(local_file_save_options) = &video_options.local_file_save_options {
                     let op_dir = create_dir(local_file_save_options).await?;
-                    filename = Some(format!(
+                    let filename_str = format!(
                         "{}-{}-{}-{}.mp4",
-                        op_dir.join("video").to_string_lossy().replace(" ", "_"),
+                        "video",
                         device.display_name.replace(" ", "_"),
                         video_options.device_id.replace(" ", "_").replace("/", "_"),
                         chrono::Local::now().format("%Y-%m-%d-%H-%M-%S")
+                    );
+
+                    metadata = Some(RecordingMetadata::new(
+                        filename_str.clone(),
+                        path::absolute(&op_dir)
+                            .unwrap()
+                            .to_string_lossy()
+                            .to_string(),
+                        "camera".into(),
+                        "video".into(),
+                        video_options.codec.clone(),
+                        None, // No audio channel for video
                     ));
+
+                    filename = Some(op_dir.join(filename_str).to_string_lossy().to_string());
                 }
                 device.video_pipeline(
                     &video_options.codec,
@@ -136,9 +157,9 @@ impl GstMediaStream {
                 let mut filename = None;
                 if let Some(local_file_save_options) = &audio_options.local_file_save_options {
                     let op_dir = create_dir(local_file_save_options).await?;
-                    filename = Some(format!(
+                    let filename_str = format!(
                         "{}-{}-{}-{}-{}.m4a",
-                        op_dir.join("audio").to_string_lossy().replace(" ", "_"),
+                        "audio",
                         match audio_options.selected_channel {
                             Some(channel) => format!(
                                 "{}-channel-{}",
@@ -150,7 +171,21 @@ impl GstMediaStream {
                         audio_options.device_id.replace(" ", "_"),
                         audio_options.device_id.replace(" ", "_").replace("/", "_"),
                         chrono::Local::now().format("%Y-%m-%d-%H-%M-%S")
+                    );
+
+                    metadata = Some(RecordingMetadata::new(
+                        filename_str.clone(),
+                        path::absolute(&op_dir)
+                            .unwrap()
+                            .to_string_lossy()
+                            .to_string(),
+                        "microphone".into(),
+                        "audio".into(),
+                        audio_options.codec.clone(),
+                        audio_options.selected_channel.clone(),
                     ));
+
+                    filename = Some(op_dir.join(filename_str).to_string_lossy().to_string());
                 }
                 match audio_options.selected_channel {
                     Some(selected_channel) => device.deinterleaved_audio_pipeline(
@@ -171,7 +206,11 @@ impl GstMediaStream {
             }
         };
 
-        let pipline_task = tokio::spawn(run_pipeline(pipeline.clone(), close_tx.clone()));
+        let pipline_task = tokio::spawn(run_pipeline(
+            pipeline.clone(),
+            close_tx.clone(),
+            metadata.clone(),
+        ));
 
         let handle = StreamHandle {
             close_tx,

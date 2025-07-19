@@ -13,8 +13,8 @@ async fn main() -> Result<(), GStreamerError> {
     // This can be checked by running `v4l2-ctl --list-formats-ext -d /dev/video0` for example or using gst-device-monitor-1.0 Video/Source
     let mut stream = GstMediaStream::new(PublishOptions::Video(VideoPublishOptions {
         codec: "image/jpeg".to_string(),
-        width: 1280,
-        height: 720,
+        width: 1920,
+        height: 1080,
         framerate: 30,
         device_id: "/dev/video0".to_string(),
         local_file_save_options: Some(LocalFileSaveOptions {
@@ -24,25 +24,39 @@ async fn main() -> Result<(), GStreamerError> {
 
     stream.start().await.unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+    let (mut frame_rx, mut close_rx) = stream.subscribe().unwrap();
+
+    let sleep = tokio::time::sleep(tokio::time::Duration::from_secs(20));
+    tokio::pin!(sleep);
+
+    loop {
+        tokio::select! {
+            _ = &mut sleep => {
+                break;
+            }
+            _ = tokio::signal::ctrl_c() => {
+                break;
+            }
+            _ = close_rx.recv() => {
+                break;
+            }
+            frame = frame_rx.recv() => {
+                match frame {
+                    Ok(frame) => {
+                        println!(
+                            "Received frame at {:?} microseconds",
+                            frame.pts().unwrap_or_default().useconds()
+                        );
+                    }
+                    Err(_) => {
+                        break;
+                    }
+                }
+            }
+        }
+    }
 
     stream.stop().await?;
-
-    // if let Some((mut frame_rx, mut close_rx)) = stream.subscribe() {
-    //     loop {
-    //         tokio::select! {
-    //             _ = close_rx.recv() => {
-    //                 break;
-    //             }
-    //             frame = frame_rx.recv() => {
-    //                 if let Ok(frame) = frame {
-    //                     // Do something with the frame
-    //                     println!("Received frame at {:?} microseconds", frame.pts().unwrap_or_default().useconds());
-    //                 }
-    //             }
-    //         }
-    //     }
-    // }
 
     Ok(())
 }
