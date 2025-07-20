@@ -428,7 +428,10 @@ impl GstMediaDevice {
                 "Device does not support requested configuration".to_string(),
             ));
         }
-
+        println!(
+            "Creating audio pipeline for {} with {} channels at {} Hz to record at {:?} ",
+            codec, channels, framerate, filename
+        );
         self.audio_xraw_pipeline(channels, framerate, tx, filename)
     }
 
@@ -577,29 +580,44 @@ impl GstMediaDevice {
         let pipeline = gstreamer::Pipeline::with_name(&random_string("stream-audio-xraw"));
 
         pipeline
-            .add_many([
-                &audio_el,
-                &caps_element,
-                &tee,
-                &queue_appsink,
-                (broadcast_appsink.upcast_ref()),
-            ])
+            .add_many([&audio_el, &caps_element, &tee])
             .map_err(|_| {
                 GStreamerError::PipelineError("Failed to add elements to pipeline".to_string())
             })?;
 
-        gstreamer::Element::link_many([
-            &audio_el,
-            &caps_element,
-            &tee,
-            &queue_appsink,
-            (broadcast_appsink.upcast_ref()),
-        ])
-        .map_err(|_| GStreamerError::PipelineError("Failed to link elements".to_string()))?;
+        gstreamer::Element::link_many([&audio_el, &caps_element, &tee])
+            .map_err(|_| GStreamerError::PipelineError("Failed to link elements".to_string()))?;
+
+        pipeline
+            .add_many(&[&queue_appsink, broadcast_appsink.upcast_ref()])
+            .map_err(|_| GStreamerError::PipelineError("Failed to add appsink".to_string()))?;
+        gstreamer::Element::link_many(&[&queue_appsink, broadcast_appsink.upcast_ref()])
+            .map_err(|_| GStreamerError::PipelineError("Failed to link appsink".to_string()))?;
+
+        let tee_appsink_pad = tee.request_pad_simple("src_%u").ok_or_else(|| {
+            GStreamerError::PipelineError("Failed to request tee pad for appsink".into())
+        })?;
+
+        let queue_appsink_pad = queue_appsink
+            .static_pad("sink")
+            .ok_or_else(|| GStreamerError::PipelineError("Appsink queue has no sink pad".into()))?;
+
+        tee_appsink_pad.link(&queue_appsink_pad).map_err(|_| {
+            GStreamerError::PipelineError("Failed to link tee to appsink queue".into())
+        })?;
 
         if let Some(ref path) = filename {
             self.add_audio_file_branch(&pipeline, &tee, path)?;
         }
+
+        pipeline
+            .iterate_elements()
+            .foreach(|e| {
+                let _ = e.sync_state_with_parent();
+            })
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to sync state with parent".to_string())
+            })?;
 
         Ok(pipeline)
     }
@@ -721,7 +739,6 @@ impl GstMediaDevice {
         let i420_caps = gstreamer::Caps::builder("video/x-raw")
             .field("format", "I420")
             .build();
-
         let appsink = self.broadcast_appsink(tx, Some(&i420_caps))?;
 
         let pipeline = gstreamer::Pipeline::with_name(&random_string("stream-h264"));
@@ -884,7 +901,7 @@ impl GstMediaDevice {
             .dynamic_cast::<AppSink>()
             .map_err(|_| GStreamerError::PipelineError("Failed to cast appsink".to_string()))?;
 
-        appsink.set_property("sync", &false);
+        // appsink.set_property("sync", &false);
         appsink.set_property("emit-signals", &true);
         appsink.set_property("drop", &true);
         appsink.set_property("max-buffers", &1u32);
@@ -893,14 +910,14 @@ impl GstMediaDevice {
             gstreamer_app::AppSinkCallbacks::builder()
                 .new_sample(move |sink| {
                     let sample = match sink.pull_sample() {
-                        Ok(sample) => sample,
+                        Ok(s) => s,
                         Err(_) => return Err(gstreamer::FlowError::Eos),
                     };
 
-                    // Send the sample to the broadcast channel without awaiting
                     let buffer = sample.buffer().ok_or(gstreamer::FlowError::Error)?;
-                    if tx.send(Arc::new(buffer.copy())).is_err() {
-                        return Err(gstreamer::FlowError::Error);
+
+                    if tx.receiver_count() > 0 {
+                        let _ = tx.send(Arc::new(buffer.copy()));
                     }
                     Ok(gstreamer::FlowSuccess::Ok)
                 })
@@ -1005,29 +1022,80 @@ impl GstMediaDevice {
         tee: &gstreamer::Element,
         path: &str,
     ) -> Result<(), GStreamerError> {
-        println!("Adding audio file branch to pipeline at {}", path);
-        let file_branch = gstreamer::parse::bin_from_description(
-            &format!(
-                concat!(
-                    "queue name=file-sink-queue ! ",
-                    "audioconvert ! audioresample ! ",
-                    "avenc_aac bitrate=128000 ! ",
-                    "aacparse ! mp4mux ! filesink location={} sync=false"
-                ),
-                path
-            ),
-            true,
-        )
+        let queue_file = gstreamer::ElementFactory::make("queue")
+            .name(random_string("file-queue"))
+            .build()
+            .map_err(|_| GStreamerError::PipelineError("queue".into()))?;
+
+        let convert = gstreamer::ElementFactory::make("audioconvert")
+            .name(random_string("file-audioconvert"))
+            .build()
+            .map_err(|_| GStreamerError::PipelineError("audioconvert".into()))?;
+
+        let resample = gstreamer::ElementFactory::make("audioresample")
+            .name(random_string("file-audioresample"))
+            .build()
+            .map_err(|_| GStreamerError::PipelineError("audioresample".into()))?;
+
+        let encoder = gstreamer::ElementFactory::make("avenc_aac")
+            .name(random_string("file-avenc_aac"))
+            .build()
+            .map_err(|_| GStreamerError::PipelineError("avenc_aac".into()))?;
+        encoder.set_property("bitrate", &128000i32);
+
+        let parser = gstreamer::ElementFactory::make("aacparse")
+            .name(random_string("file-aacparse"))
+            .build()
+            .map_err(|_| GStreamerError::PipelineError("aacparse".into()))?;
+
+        let muxer = gstreamer::ElementFactory::make("mp4mux")
+            .name(random_string("file-mp4mux"))
+            .build()
+            .map_err(|_| GStreamerError::PipelineError("mp4mux".into()))?;
+
+        let filesink = gstreamer::ElementFactory::make("filesink")
+            .name(random_string("file-filesink"))
+            .build()
+            .map_err(|_| GStreamerError::PipelineError("filesink".into()))?;
+        filesink.set_property("location", &path);
+        filesink.set_property("sync", &false);
+
+        pipeline
+            .add_many(&[
+                &queue_file,
+                &convert,
+                &resample,
+                &encoder,
+                &parser,
+                &muxer,
+                &filesink,
+            ])
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to ad elements to the file branch".into())
+            })?;
+
+        gstreamer::Element::link_many(&[
+            &queue_file,
+            &convert,
+            &resample,
+            &encoder,
+            &parser,
+            &muxer,
+            &filesink,
+        ])
         .map_err(|_| {
-            GStreamerError::PipelineError("Failed to create audio file branch".to_string())
+            GStreamerError::PipelineError("Failed to link elements in file branch".into())
         })?;
 
-        pipeline.add(&file_branch).map_err(|_| {
-            GStreamerError::PipelineError("Failed to add audio file branch".to_string())
-        })?;
+        let tee_src_pad = tee
+            .request_pad_simple("src_%u")
+            .ok_or_else(|| GStreamerError::PipelineError("Failed to request tee pad".into()))?;
+        let queue_sink_pad = queue_file
+            .static_pad("sink")
+            .ok_or_else(|| GStreamerError::PipelineError("Queue has no sink pad".into()))?;
 
-        tee.link(&file_branch).map_err(|_| {
-            GStreamerError::PipelineError("Failed to link audio tee to file branch".to_string())
+        tee_src_pad.link(&queue_sink_pad).map_err(|_| {
+            GStreamerError::PipelineError("Failed to link tee to file branch".into())
         })?;
 
         Ok(())

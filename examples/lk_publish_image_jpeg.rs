@@ -8,8 +8,8 @@ use livekit_gstreamer::{
 };
 use std::{env, sync::Arc};
 
-#[path = "./wait_lk.rs"]
-mod wait_lk;
+#[path = "./wait.rs"]
+mod wait;
 
 #[tokio::main]
 async fn main() -> Result<(), LKParticipantError> {
@@ -65,5 +65,5 @@ async fn main() -> Result<(), LKParticipantError> {
         String::from(new_room.sid().await)
     );
 
-    wait_lk::wait(&mut [stream], new_room.clone(), &mut room_rx).await
+    wait::wait_lk(&mut [stream], new_room.clone(), &mut room_rx).await
 }

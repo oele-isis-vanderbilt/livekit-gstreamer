@@ -3,6 +3,9 @@ use livekit_gstreamer::{
     GStreamerError, GstMediaStream, LocalFileSaveOptions, PublishOptions, VideoPublishOptions,
 };
 
+#[path = "./wait.rs"]
+mod wait;
+
 #[tokio::main]
 async fn main() -> Result<(), GStreamerError> {
     dotenv().ok();
@@ -24,39 +27,7 @@ async fn main() -> Result<(), GStreamerError> {
 
     stream.start().await.unwrap();
 
-    let (mut frame_rx, mut close_rx) = stream.subscribe().unwrap();
+    let (frame_rx, close_rx) = stream.subscribe().unwrap();
 
-    let sleep = tokio::time::sleep(tokio::time::Duration::from_secs(20));
-    tokio::pin!(sleep);
-
-    loop {
-        tokio::select! {
-            _ = &mut sleep => {
-                break;
-            }
-            _ = tokio::signal::ctrl_c() => {
-                break;
-            }
-            _ = close_rx.recv() => {
-                break;
-            }
-            frame = frame_rx.recv() => {
-                match frame {
-                    Ok(frame) => {
-                        println!(
-                            "Received frame at {:?} microseconds",
-                            frame.pts().unwrap_or_default().useconds()
-                        );
-                    }
-                    Err(_) => {
-                        break;
-                    }
-                }
-            }
-        }
-    }
-
-    stream.stop().await?;
-
-    Ok(())
+    wait::wait_stream(&mut stream, frame_rx, close_rx).await
 }

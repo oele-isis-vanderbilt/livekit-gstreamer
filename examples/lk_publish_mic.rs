@@ -46,7 +46,6 @@ async fn main() -> Result<(), LKParticipantError> {
         local_file_save_options: Some(LocalFileSaveOptions {
             output_dir: "recordings".to_string(),
         }),
-        // local_file_save_options: None,
     };
 
     let mut stream = GstMediaStream::new(PublishOptions::Audio(publish_options));
