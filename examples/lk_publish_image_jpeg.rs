@@ -1,5 +1,5 @@
 use dotenvy::dotenv;
-use livekit::{Room, RoomEvent, RoomOptions};
+use livekit::{Room, RoomOptions};
 
 use livekit_api::access_token;
 use livekit_gstreamer::{
@@ -8,7 +8,7 @@ use livekit_gstreamer::{
 };
 use std::{env, sync::Arc};
 
-#[path = "./wait.rs"]
+#[path = "./helper/wait.rs"]
 mod wait;
 
 #[tokio::main]

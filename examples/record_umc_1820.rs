@@ -13,10 +13,10 @@ async fn main() -> Result<(), GStreamerError> {
 
     let publish_options = AudioPublishOptions {
         codec: "audio/x-raw".to_string(),
-        device_id: "hw:3".to_string(),
-        framerate: 48000,
-        channels: 1,
-        selected_channel: None,
+        device_id: "hw:4".to_string(),
+        framerate: 96000,
+        channels: 10,
+        selected_channel: Some(2),
         local_file_save_options: Some(LocalFileSaveOptions {
             output_dir: "recordings".to_string(),
         }),

@@ -1,5 +1,5 @@
 use dotenvy::dotenv;
-use livekit::{Room, RoomEvent, RoomOptions};
+use livekit::{Room, RoomOptions};
 
 use livekit_api::access_token;
 use livekit_gstreamer::{
@@ -7,6 +7,9 @@ use livekit_gstreamer::{
     VideoPublishOptions,
 };
 use std::{env, sync::Arc};
+
+#[path = "./helper/wait.rs"]
+mod wait;
 
 #[tokio::main]
 async fn main() -> Result<(), LKParticipantError> {
@@ -25,7 +28,7 @@ async fn main() -> Result<(), LKParticipantError> {
         .with_name("Rust Bot Multitrack")
         .with_grants(access_token::VideoGrants {
             room_join: true,
-            room: "DemoRoom".to_string(),
+            room: "demo-room".to_string(),
             ..Default::default()
         })
         .to_jwt()
@@ -54,19 +57,19 @@ async fn main() -> Result<(), LKParticipantError> {
     }));
 
     let mut stream2 = GstMediaStream::new(PublishOptions::Video(VideoPublishOptions {
-        codec: "video/x-h264".to_string(),
+        codec: "image/jpeg".to_string(),
         width: 1280,
         height: 720,
         framerate: 30,
-        device_id: "/dev/video4".to_string(),
+        device_id: "/dev/video2".to_string(),
         local_file_save_options: None,
     }));
 
     let mut stream3 = GstMediaStream::new(PublishOptions::Audio(AudioPublishOptions {
         codec: "audio/x-raw".to_string(),
-        device_id: "front:3".to_string(),
+        device_id: "hw:2".to_string(),
         framerate: 32000,
-        channels: 2,
+        channels: 1,
         selected_channel: None,
         local_file_save_options: None,
     }));
@@ -80,54 +83,46 @@ async fn main() -> Result<(), LKParticipantError> {
         local_file_save_options: None,
     }));
 
-    stream1.start().await.unwrap();
-    stream2.start().await.unwrap();
-    stream3.start().await.unwrap();
-    stream4.start().await.unwrap();
-
     let mut participant = LKParticipant::new(new_room.clone());
-    participant.publish_stream(&mut stream1, None).await?;
+    participant
+        .publish_stream(&mut stream1, Some("camera-1".into()))
+        .await?;
     log::info!(
         "Published {} stream from device: {}",
         stream1.kind(),
         stream1.get_device_name().unwrap()
     );
 
-    participant.publish_stream(&mut stream2, None).await?;
+    participant
+        .publish_stream(&mut stream2, Some("camera-2".into()))
+        .await?;
     log::info!(
         "Published {} stream from device: {}",
         stream2.kind(),
         stream2.get_device_name().unwrap()
     );
-    participant.publish_stream(&mut stream3, None).await?;
+    participant
+        .publish_stream(&mut stream3, Some("mic-1".into()))
+        .await?;
     log::info!(
         "Published {} stream from device: {}",
         stream3.kind(),
         stream3.get_device_name().unwrap()
     );
 
-    participant.publish_stream(&mut stream4, None).await?;
+    participant
+        .publish_stream(&mut stream4, Some("mic-2".into()))
+        .await?;
     log::info!(
         "Published {} stream from device: {}",
         stream4.kind(),
         stream4.get_device_name().unwrap()
     );
 
-    while let Some(msg) = room_rx.recv().await {
-        match msg {
-            RoomEvent::Disconnected { reason } => {
-                log::info!("Disconnected from room: {:?}", reason);
-                stream1.stop().await?;
-                stream2.stop().await?;
-                stream3.stop().await?;
-                stream4.stop().await?;
-                break;
-            }
-            _ => {
-                log::info!("Received room event: {:?}", msg);
-            }
-        }
-    }
-
-    Ok(())
+    wait::wait_lk(
+        &mut [stream1, stream2, stream3, stream4],
+        new_room.clone(),
+        &mut room_rx,
+    )
+    .await
 }

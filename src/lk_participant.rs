@@ -23,9 +23,15 @@ pub enum LKParticipantError {
     #[error("GStreamer error: {0}")]
     GStreamerError(#[from] GStreamerError),
     #[error("Livekit error: {0}")]
-    LivekitError(#[from] RoomError),
+    LivekitError(#[from] Box<RoomError>),
     #[error("Streaming error: {0}")]
     StreamingError(String),
+}
+
+impl From<RoomError> for LKParticipantError {
+    fn from(err: RoomError) -> Self {
+        LKParticipantError::LivekitError(Box::new(err))
+    }
 }
 
 pub struct LKParticipant {

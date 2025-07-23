@@ -1,5 +1,5 @@
 use dotenvy::dotenv;
-use livekit::{Room, RoomEvent, RoomOptions};
+use livekit::{Room, RoomOptions};
 use livekit_gstreamer::{
     AudioPublishOptions, GstMediaStream, LKParticipant, LKParticipantError, LocalFileSaveOptions,
     PublishOptions,
@@ -7,6 +7,9 @@ use livekit_gstreamer::{
 
 use livekit_api::access_token;
 use std::{env, sync::Arc};
+
+#[path = "./helper/wait.rs"]
+mod wait;
 
 #[tokio::main]
 async fn main() -> Result<(), LKParticipantError> {
@@ -39,7 +42,7 @@ async fn main() -> Result<(), LKParticipantError> {
 
     let publish_options = AudioPublishOptions {
         codec: "audio/x-raw".to_string(),
-        device_id: "hw:1".to_string(),
+        device_id: "hw:2".to_string(),
         framerate: 48000,
         channels: 1,
         selected_channel: None,
@@ -62,34 +65,5 @@ async fn main() -> Result<(), LKParticipantError> {
         String::from(new_room.sid().await)
     );
 
-    loop {
-        tokio::select! {
-            msg = room_rx.recv() => {
-                match msg {
-                    Some(RoomEvent::Disconnected { reason }) => {
-                        log::info!("Disconnected from room: {:?}", reason);
-                        stream.stop().await?;
-                        break;
-                    }
-                    Some(other_event) => {
-                        log::info!("Received room event: {:?}", other_event);
-                    }
-                    None => {
-                        log::info!("Room event channel closed");
-                        stream.stop().await?;
-                        break;
-                    }
-                }
-            }
-            _ = tokio::signal::ctrl_c() => {
-                log::info!("Received Ctrl+C, stopping stream and disconnecting");
-                stream.stop().await?;
-                new_room.close().await?;
-                log::info!("Disconnected from room");
-                break;
-            }
-        }
-    }
-
-    Ok(())
+    wait::wait_lk(&mut [stream], new_room.clone(), &mut room_rx).await
 }

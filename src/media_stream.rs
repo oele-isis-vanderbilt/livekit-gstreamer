@@ -182,7 +182,7 @@ impl GstMediaStream {
                         "microphone".into(),
                         "audio".into(),
                         audio_options.codec.clone(),
-                        audio_options.selected_channel.clone(),
+                        audio_options.selected_channel,
                     ));
 
                     filename = Some(op_dir.join(filename_str).to_string_lossy().to_string());
@@ -194,6 +194,7 @@ impl GstMediaStream {
                         selected_channel,
                         audio_options.framerate,
                         frame_tx_arc.clone(),
+                        filename,
                     )?,
                     None => device.audio_pipeline(
                         &audio_options.codec,

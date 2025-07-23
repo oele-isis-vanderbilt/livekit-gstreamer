@@ -3,7 +3,7 @@ use livekit_gstreamer::{
     GStreamerError, GstMediaStream, LocalFileSaveOptions, PublishOptions, VideoPublishOptions,
 };
 
-#[path = "./wait.rs"]
+#[path = "./helper/wait.rs"]
 mod wait;
 
 #[tokio::main]

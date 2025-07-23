@@ -1,11 +1,15 @@
 use dotenvy::dotenv;
-use livekit::{Room, RoomEvent, RoomOptions};
+use livekit::{Room, RoomOptions};
 use livekit_gstreamer::{
-    AudioPublishOptions, GstMediaStream, LKParticipant, LKParticipantError, PublishOptions,
+    AudioPublishOptions, GstMediaStream, LKParticipant, LKParticipantError, LocalFileSaveOptions,
+    PublishOptions,
 };
 
 use livekit_api::access_token;
 use std::{env, sync::Arc};
+
+#[path = "./helper/wait.rs"]
+mod wait;
 
 #[tokio::main]
 async fn main() -> Result<(), LKParticipantError> {
@@ -24,7 +28,7 @@ async fn main() -> Result<(), LKParticipantError> {
         .with_name("Rust Bot Microphone")
         .with_grants(access_token::VideoGrants {
             room_join: true,
-            room: "SyncFlow_lgkudk".to_string(),
+            room: "demo-room".to_string(),
             ..Default::default()
         })
         .to_jwt()
@@ -42,7 +46,9 @@ async fn main() -> Result<(), LKParticipantError> {
         framerate: 96000,
         channels: 10,
         selected_channel: Some(1),
-        local_file_save_options: None,
+        local_file_save_options: Some(LocalFileSaveOptions {
+            output_dir: "recordings".to_string(),
+        }),
     };
 
     let publish_options2 = AudioPublishOptions {
@@ -51,7 +57,9 @@ async fn main() -> Result<(), LKParticipantError> {
         framerate: 96000,
         channels: 10,
         selected_channel: Some(2),
-        local_file_save_options: None,
+        local_file_save_options: Some(LocalFileSaveOptions {
+            output_dir: "recordings".to_string(),
+        }),
     };
 
     let mut stream1 = GstMediaStream::new(PublishOptions::Audio(publish_options1));
@@ -75,19 +83,5 @@ async fn main() -> Result<(), LKParticipantError> {
         String::from(new_room.sid().await)
     );
 
-    while let Some(msg) = room_rx.recv().await {
-        match msg {
-            RoomEvent::Disconnected { reason } => {
-                log::info!("Disconnected from room: {:?}", reason);
-                stream1.stop().await?;
-                stream2.stop().await?;
-                break;
-            }
-            _ => {
-                log::info!("Received room event: {:?}", msg);
-            }
-        }
-    }
-
-    Ok(())
+    wait::wait_lk(&mut [stream1, stream2], new_room.clone(), &mut room_rx).await
 }

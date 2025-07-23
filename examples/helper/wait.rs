@@ -4,6 +4,7 @@ use livekit::{Room, RoomEvent};
 use livekit_gstreamer::{GStreamerError, GstMediaStream, LKParticipantError};
 use tokio::sync::mpsc::UnboundedReceiver;
 
+#[allow(dead_code)]
 pub async fn wait_lk(
     streams: &mut [GstMediaStream],
     room: Arc<Room>,
@@ -47,6 +48,7 @@ pub async fn wait_lk(
     Ok(())
 }
 
+#[allow(dead_code)]
 pub async fn wait_stream(
     stream: &mut GstMediaStream,
     mut frame_rx: tokio::sync::broadcast::Receiver<Arc<gstreamer::Buffer>>,
