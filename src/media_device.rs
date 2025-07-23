@@ -1,3 +1,4 @@
+use display_info::DisplayInfo;
 use gstreamer::{prelude::*, Buffer};
 use gstreamer::{Device, DeviceMonitor};
 use gstreamer_app::AppSink;
@@ -24,6 +25,68 @@ static GLOBAL_DEVICE_MONITOR: Lazy<Arc<Mutex<DeviceMonitor>>> = Lazy::new(|| {
     }
     Arc::new(Mutex::new(monitor))
 });
+
+#[cfg(target_os = "linux")]
+pub fn parse_monitors_linux() -> Vec<MediaDeviceInfo> {
+    let all_monitors = DisplayInfo::all().unwrap_or_else(|_| vec![]);
+    println!("Found {} monitors", all_monitors.len());
+    all_monitors
+        .into_iter()
+        .map(MediaDeviceInfo::from)
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn get_monitor(id_or_name: &str) -> Option<MediaDeviceInfo> {
+    let all_monitors = DisplayInfo::all().unwrap_or_else(|_| vec![]);
+    all_monitors
+        .into_iter()
+        .find(|m| m.id.to_string() == id_or_name || m.name == id_or_name)
+        .map(MediaDeviceInfo::from)
+}
+
+fn get_frame_rates(display_info: &DisplayInfo) -> Vec<i32> {
+    let rate = display_info.frequency;
+    let mut rates = vec![rate as i32];
+    if rate > 30.0 {
+        rates.push(30);
+    }
+
+    rates
+}
+
+#[cfg(target_os = "linux")]
+impl From<DisplayInfo> for MediaDeviceInfo {
+    fn from(display_info: DisplayInfo) -> Self {
+        use std::vec;
+        let scale_factor = display_info.scale_factor;
+
+        let startx = (display_info.x as f32 * scale_factor).round() as i32;
+        let starty = (display_info.y as f32 * scale_factor).round() as i32;
+
+        let endx = startx + (display_info.width as f32 * scale_factor).round() as i32;
+        let endy = starty + (display_info.height as f32 * scale_factor).round() as i32;
+
+        let actual_width = (display_info.width as f32 * scale_factor).round() as i32;
+        let actual_height = (display_info.height as f32 * scale_factor).round() as i32;
+
+        MediaDeviceInfo {
+            device_path: display_info.id.clone().to_string(),
+            display_name: display_info.friendly_name.clone(),
+            capabilities: vec![MediaCapability::Screen(SreenCapability {
+                width: actual_width,
+                height: actual_height,
+                framerates: get_frame_rates(&display_info),
+                codec: "video/x-raw".to_string(),
+                startx,
+                starty,
+                endx,
+                endy,
+            })],
+            device_class: "Screen/Source".to_string(),
+        }
+    }
+}
 
 pub fn get_gst_device(path: &str) -> Option<Device> {
     let device_monitor = GLOBAL_DEVICE_MONITOR.clone();
@@ -134,7 +197,7 @@ pub fn get_devices_info() -> Vec<MediaDeviceInfo> {
     let device_monitor = GLOBAL_DEVICE_MONITOR.clone();
     let device_monitor = device_monitor.lock().unwrap();
     let devices = device_monitor.devices();
-    devices
+    let mut media_devices = devices
         .into_iter()
         .filter_map(|d| {
             let path = get_device_path(&d)?;
@@ -148,7 +211,14 @@ pub fn get_devices_info() -> Vec<MediaDeviceInfo> {
                 device_class: class,
             })
         })
-        .collect()
+        .collect::<Vec<MediaDeviceInfo>>();
+
+    #[cfg(target_os = "linux")]
+    {
+        media_devices.extend(parse_monitors_linux());
+    }
+
+    media_devices
 }
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
@@ -272,6 +342,8 @@ pub async fn run_pipeline(
             factory.map(|f| f.name() == *"filesink").unwrap_or(false)
         });
 
+        println!("Filesink found: {:?}", filesink);
+
         if let Some(filesink) = filesink {
             let timing_clone = timing.clone();
             if let Some(sink_pad) = filesink.static_pad("sink") {
@@ -353,9 +425,144 @@ impl GstMediaDevice {
         Ok(device)
     }
 
+    #[cfg(target_os = "linux")]
+    pub fn from_screen_id_or_name(screen_id_or_name: &str) -> Result<Self, GStreamerError> {
+        let monitor = get_monitor(screen_id_or_name)
+            .ok_or_else(|| GStreamerError::DeviceError("No screen found".to_string()))?;
+
+        let device = GstMediaDevice {
+            display_name: monitor.display_name,
+            device_class: "Screen/Source".to_string(),
+            device_path: monitor.device_path,
+        };
+
+        Ok(device)
+    }
+
     pub fn capabilities(&self) -> Vec<MediaCapability> {
+        if self.device_class == "Screen/Source" {
+            return get_monitor(&self.device_path).map_or(vec![], |m| m.capabilities);
+        }
         let device = get_gst_device(&self.device_path).unwrap();
         get_device_capabilities(&device)
+    }
+
+    pub fn screen_share_pipeline(
+        &self,
+        codec: &str,
+        width: i32,
+        height: i32,
+        framerate: i32,
+        tx: Arc<broadcast::Sender<Arc<Buffer>>>,
+        filename: Option<String>,
+    ) -> Result<gstreamer::Pipeline, GStreamerError> {
+        if self.device_class != "Screen/Source" {
+            return Err(GStreamerError::PipelineError(
+                "Device is not a screen source".to_string(),
+            ));
+        }
+
+        let can_support = self.supports_screen_share(codec, width, height, framerate);
+
+        if !can_support {
+            return Err(GStreamerError::PipelineError(
+                "Device does not support requested configuration".to_string(),
+            ));
+        }
+
+        let element = self.get_screen_element()?;
+
+        let video_convert = gstreamer::ElementFactory::make("videoconvert")
+            .name(random_string("videoconvert"))
+            .build()
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to create videoconvert".to_string())
+            })?;
+
+        let video_scale = gstreamer::ElementFactory::make("videoscale")
+            .name(random_string("videoscale"))
+            .build()
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to create videoscale".to_string())
+            })?;
+
+        let caps = gstreamer::Caps::builder("video/x-raw")
+            .field("format", VIDEO_FRAME_FORMAT)
+            .field("width", width)
+            .field("height", height)
+            .field("framerate", gstreamer::Fraction::new(framerate, 1))
+            .field("pixel-aspect-ratio", gstreamer::Fraction::new(1, 1))
+            .build();
+
+        let caps_filter = gstreamer::ElementFactory::make("capsfilter")
+            .name(random_string("capsfilter"))
+            .build()
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to create capsfilter".to_string())
+            })?;
+
+        caps_filter.set_property("caps", &caps);
+
+        let tee = gstreamer::ElementFactory::make("tee")
+            .name(random_string("tee"))
+            .build()
+            .map_err(|_| GStreamerError::PipelineError("Failed to create tee".to_string()))?;
+
+        let queue_appsink = gstreamer::ElementFactory::make("queue")
+            .name(random_string("queue-appsink"))
+            .build()
+            .map_err(|_| GStreamerError::PipelineError("Failed to create queue".to_string()))?;
+
+        let broadcast_appsink = self.broadcast_appsink(tx, Some(&caps))?;
+
+        let pipeline = gstreamer::Pipeline::with_name(&random_string("stream-screen-share"));
+
+        pipeline
+            .add_many([
+                &element,
+                &video_convert,
+                &video_scale,
+                &caps_filter,
+                &tee,
+                &queue_appsink,
+                broadcast_appsink.upcast_ref(),
+            ])
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to add elements to pipeline".to_string())
+            })?;
+
+        gstreamer::Element::link_many([&element, &video_convert, &video_scale, &caps_filter, &tee])
+            .map_err(|e| GStreamerError::PipelineError(e.to_string()))?;
+
+        let tee_appsink_pad = tee.request_pad_simple("src_%u").ok_or_else(|| {
+            GStreamerError::PipelineError("Failed to request tee pad for appsink".into())
+        })?;
+
+        let queue_appsink_pad = queue_appsink
+            .static_pad("sink")
+            .ok_or_else(|| GStreamerError::PipelineError("Appsink queue has no sink pad".into()))?;
+
+        tee_appsink_pad.link(&queue_appsink_pad).map_err(|_| {
+            GStreamerError::PipelineError("Failed to link tee to appsink queue".into())
+        })?;
+
+        gstreamer::Element::link_many([&queue_appsink, broadcast_appsink.upcast_ref()])
+            .map_err(|_| GStreamerError::PipelineError("Failed to link appsink".to_string()))?;
+
+        if let Some(ref path) = filename {
+            self.add_video_file_branch(&pipeline, &tee, path)?;
+        }
+
+        pipeline
+            .iterate_elements()
+            .foreach(|e| {
+                let _ = e.sync_state_with_parent();
+            })
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to sync state with parent".to_string())
+            })?;
+
+        Ok(pipeline)
     }
 
     pub fn video_pipeline(
@@ -692,6 +899,32 @@ impl GstMediaDevice {
         })
     }
 
+    pub fn supports_screen_share(
+        &self,
+        codec: &str,
+        width: i32,
+        height: i32,
+        framerate: i32,
+    ) -> bool {
+        if self.device_class != "Screen/Source" {
+            return false;
+        }
+        let caps = self.capabilities();
+        let caps = caps
+            .iter()
+            .filter_map(|c| match c {
+                MediaCapability::Screen(c) => Some(c),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        caps.iter().any(|c| {
+            c.codec == codec
+                && c.width >= width
+                && c.height >= height
+                && c.framerates.contains(&framerate)
+        })
+    }
     //FixMe: This Pipeline doesn't work for all devices
     fn video_xraw_pipeline(
         &self,
@@ -917,6 +1150,32 @@ impl GstMediaDevice {
         let element = device
             .create_element(Some(random_source_name.as_str()))
             .unwrap();
+        Ok(element)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn get_screen_element(&self) -> Result<gstreamer::Element, GStreamerError> {
+        let monitor = get_monitor(&self.device_path)
+            .ok_or_else(|| GStreamerError::DeviceError("No screen found".to_string()))?;
+
+        let element = gstreamer::ElementFactory::make("ximagesrc")
+            .name(random_string("screen-source"))
+            .build()
+            .map_err(|_| GStreamerError::PipelineError("Failed to create ximagesrc".to_string()))?;
+
+        if let Some(MediaCapability::Screen(cap)) = monitor.capabilities.first() {
+            element.set_property("use-damage", false);
+            element.set_property("show-pointer", true);
+            element.set_property("startx", cap.startx as u32);
+            element.set_property("starty", cap.starty as u32);
+            element.set_property("endx", cap.endx as u32 - 1);
+            element.set_property("endy", cap.endy as u32 - 1);
+        } else {
+            return Err(GStreamerError::PipelineError(
+                "No screen capability found".to_string(),
+            ));
+        }
+
         Ok(element)
     }
 
@@ -1159,6 +1418,18 @@ pub struct AudioCapability {
 }
 
 #[derive(Debug, Clone)]
+pub struct SreenCapability {
+    pub width: i32,
+    pub height: i32,
+    pub framerates: Vec<i32>,
+    pub codec: String,
+    pub startx: i32,
+    pub starty: i32,
+    pub endx: i32,
+    pub endy: i32,
+}
+
+#[derive(Debug, Clone)]
 pub struct MediaDeviceInfo {
     pub device_path: String,
     pub display_name: String,
@@ -1170,6 +1441,7 @@ pub struct MediaDeviceInfo {
 pub enum MediaCapability {
     Video(VideoCapability),
     Audio(AudioCapability),
+    Screen(SreenCapability),
 }
 
 #[derive(Debug, Clone, Error)]

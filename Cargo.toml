@@ -12,6 +12,7 @@ authors = ["Umesh Timalsina <umesh.timalsina@vanderbilt.edu>"]
 
 [dependencies]
 chrono = "0.4.41"
+display-info = "0.5.4"
 gstreamer = "0.24.0"
 gstreamer-app = "0.24.0"
 gstreamer-video = "0.24.0"
