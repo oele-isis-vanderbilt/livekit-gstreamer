@@ -1,5 +1,10 @@
 use dotenvy::dotenv;
-use livekit_gstreamer::{GStreamerError, GstMediaStream, PublishOptions, VideoPublishOptions};
+use livekit_gstreamer::{
+    GStreamerError, GstMediaStream, LocalFileSaveOptions, PublishOptions, VideoPublishOptions,
+};
+
+#[path = "./helper/wait.rs"]
+mod wait;
 
 #[tokio::main]
 async fn main() -> Result<(), GStreamerError> {
@@ -15,25 +20,14 @@ async fn main() -> Result<(), GStreamerError> {
         height: 1080,
         framerate: 30,
         device_id: "/dev/video0".to_string(),
+        local_file_save_options: Some(LocalFileSaveOptions {
+            output_dir: "recordings".to_string(),
+        }),
     }));
 
     stream.start().await.unwrap();
 
-    if let Some((mut frame_rx, mut close_rx)) = stream.subscribe() {
-        loop {
-            tokio::select! {
-                _ = close_rx.recv() => {
-                    break;
-                }
-                frame = frame_rx.recv() => {
-                    if let Ok(frame) = frame {
-                        // Do something with the frame
-                        println!("Received frame at {:?} microseconds", frame.pts().unwrap_or_default().useconds());
-                    }
-                }
-            }
-        }
-    }
+    let (frame_rx, close_rx) = stream.subscribe().unwrap();
 
-    Ok(())
+    wait::wait_stream(&mut stream, frame_rx, close_rx).await
 }

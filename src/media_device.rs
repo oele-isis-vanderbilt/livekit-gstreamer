@@ -2,6 +2,8 @@ use gstreamer::{prelude::*, Buffer};
 use gstreamer::{Device, DeviceMonitor};
 use gstreamer_app::AppSink;
 use once_cell::sync::Lazy;
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 use thiserror::Error;
@@ -43,6 +45,13 @@ pub fn get_gst_device(path: &str) -> Option<Device> {
     });
 
     device
+}
+
+fn system_time_nanos() -> i64 {
+    let now = std::time::SystemTime::now();
+    now.duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as i64)
+        .unwrap_or(0)
 }
 
 fn get_device_capabilities(device: &Device) -> Vec<MediaCapability> {
@@ -114,6 +123,7 @@ fn get_device_path(device: &Device) -> Option<String> {
         props.get("api.v4l2.path").ok()
     };
 
+    #[allow(clippy::manual_unwrap_or_default)]
     path.or_else(|| match props.get::<Option<String>>("device.path") {
         Ok(path) => path,
         Err(_) => None,
@@ -141,6 +151,12 @@ pub fn get_devices_info() -> Vec<MediaDeviceInfo> {
         .collect()
 }
 
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
+struct FileSinkTiming {
+    start_time: Option<i64>,
+    end_time: Option<i64>,
+}
+
 /// A struct representing a GStreamer device
 /// This implementation assumes that GStreamer is initialized elsewhere
 #[derive(Debug, Clone)]
@@ -151,22 +167,162 @@ pub struct GstMediaDevice {
     pub device_path: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecordingMetadata {
+    pub filename: String,
+    pub parent_dir: String,
+    pub source: String,
+    pub media_type: String,
+    start_time: Option<i64>,
+    end_time: Option<i64>,
+    pub codec: String,
+    pub audio_channel: Option<i32>,
+}
+
+impl RecordingMetadata {
+    pub fn new(
+        filename: String,
+        parent_dir: String,
+        source: String,
+        media_type: String,
+        codec: String,
+        audio_channel: Option<i32>,
+    ) -> Self {
+        RecordingMetadata {
+            filename,
+            parent_dir,
+            source,
+            media_type,
+            start_time: None,
+            end_time: None,
+            codec,
+            audio_channel,
+        }
+    }
+
+    pub fn set_start_time(&mut self, time: i64) {
+        self.start_time = Some(time);
+    }
+
+    pub fn set_end_time(&mut self, time: i64) {
+        self.end_time = Some(time);
+    }
+
+    pub fn start_time(&self) -> Option<i64> {
+        self.start_time
+    }
+
+    pub fn end_time(&self) -> Option<i64> {
+        self.end_time
+    }
+
+    pub fn write_success(&self) -> Result<bool, GStreamerError> {
+        let parent_dir = PathBuf::from(&self.parent_dir);
+
+        let string_content = serde_json::to_string(&self).map_err(|e| {
+            GStreamerError::PipelineError(format!("Failed to serialize metadata: {}", e))
+        })?;
+
+        let metadata_file = format!("{}.json", self.filename);
+
+        std::fs::write(parent_dir.join(metadata_file), string_content).map_err(|e| {
+            GStreamerError::PipelineError(format!("Failed to write metadata: {}", e))
+        })?;
+
+        Ok(true)
+    }
+
+    pub fn write_error(&self, error: &str) -> Result<bool, GStreamerError> {
+        let parent_dir = PathBuf::from(&self.parent_dir);
+
+        let error_object = serde_json::json!({
+            "error": error,
+            "filename": self.filename,
+            "parent_dir": self.parent_dir,
+            "source": self.source,
+            "media_type": self.media_type,
+            "codec": self.codec,
+            "audio_channel": self.audio_channel,
+        });
+
+        let string_content = serde_json::to_string(&error_object).map_err(|e| {
+            GStreamerError::PipelineError(format!("Failed to serialize error metadata: {}", e))
+        })?;
+
+        let metadata_file = format!("{}.error.json", self.filename);
+
+        std::fs::write(parent_dir.join(metadata_file), string_content).map_err(|e| {
+            GStreamerError::PipelineError(format!("Failed to write metadata: {}", e))
+        })?;
+
+        Ok(true)
+    }
+}
+
 pub async fn run_pipeline(
     pipeline: gstreamer::Pipeline,
     tx: broadcast::Sender<()>,
+    mut recording_metadata: Option<RecordingMetadata>,
 ) -> Result<(), GStreamerError> {
+    let timing = Arc::new(Mutex::new(FileSinkTiming::default()));
+
+    if recording_metadata.is_some() {
+        let filesink = pipeline.iterate_elements().find(|e| {
+            let factory = e.factory();
+            factory.map(|f| f.name() == *"filesink").unwrap_or(false)
+        });
+
+        if let Some(filesink) = filesink {
+            let timing_clone = timing.clone();
+            if let Some(sink_pad) = filesink.static_pad("sink") {
+                sink_pad.add_probe(gstreamer::PadProbeType::BUFFER, move |_, info| {
+                    if let Some(gstreamer::PadProbeData::Buffer(ref buffer)) = info.data {
+                        if buffer.pts().is_some() {
+                            let mut timing = timing_clone.lock().unwrap();
+                            if timing.start_time.is_none() {
+                                timing.start_time = Some(system_time_nanos());
+                            }
+                            timing.end_time = Some(system_time_nanos());
+                        }
+                    }
+                    gstreamer::PadProbeReturn::Ok
+                });
+            }
+        }
+    }
+
     pipeline.set_state(gstreamer::State::Playing).unwrap();
     let bus = pipeline.bus().unwrap();
     for msg in bus.iter_timed(gstreamer::ClockTime::NONE) {
         use gstreamer::MessageView;
         match msg.view() {
-            MessageView::Eos(..) => break,
+            MessageView::Eos(..) => {
+                if let Some(metadata) = recording_metadata.as_mut() {
+                    metadata.set_end_time(system_time_nanos());
+                    // Get more reliable timestamps from the Filesink
+                    if let Some(start_time) = timing.lock().unwrap().start_time {
+                        metadata.set_start_time(start_time);
+                    }
+                    if let Some(end_time) = timing.lock().unwrap().end_time {
+                        metadata.set_end_time(end_time);
+                    }
+                    let _ = metadata.write_success();
+                }
+                break;
+            }
             MessageView::Error(err) => {
-                eprintln!("Error: {:?}", err.error());
+                if let Some(metadata) = recording_metadata.as_mut() {
+                    let _ =
+                        metadata.write_error(&format!("Pipeline error: {}", err.error().message()));
+                }
                 break;
             }
             MessageView::StateChanged(e) => {
-                // Check if we need to stop the pipeline
+                if let Some(metadata) = recording_metadata.as_mut() {
+                    if e.current() == gstreamer::State::Playing {
+                        metadata.set_start_time(system_time_nanos());
+                    }
+                }
                 if e.current() == gstreamer::State::Null {
                     break;
                 }
@@ -174,6 +330,9 @@ pub async fn run_pipeline(
             _ => (),
         }
     }
+    pipeline.set_state(gstreamer::State::Null).map_err(|_| {
+        GStreamerError::PipelineError("Failed to set pipeline to Null state".to_string())
+    })?;
     tx.send(())
         .map_err(|_| GStreamerError::PipelineError("Failed to send signal".to_string()))?;
     Ok(())
@@ -206,6 +365,7 @@ impl GstMediaDevice {
         height: i32,
         framerate: i32,
         tx: Arc<broadcast::Sender<Arc<Buffer>>>,
+        filename: Option<String>,
     ) -> Result<gstreamer::Pipeline, GStreamerError> {
         if self.device_class == "Audio/Source" {
             return Err(GStreamerError::PipelineError(
@@ -227,11 +387,11 @@ impl GstMediaDevice {
             ));
         }
         if codec == "video/x-raw" {
-            return self.video_xraw_pipeline(width, height, framerate, tx);
+            return self.video_xraw_pipeline(width, height, framerate, tx, filename);
         } else if codec == "video/x-h264" {
-            return self.video_xh264_pipeline(width, height, framerate, tx);
+            return self.video_xh264_pipeline(width, height, framerate, tx, filename);
         } else if codec == "image/jpeg" {
-            return self.image_jpeg_pipeline(width, height, framerate, tx);
+            return self.image_jpeg_pipeline(width, height, framerate, tx, filename);
         }
 
         Err(GStreamerError::PipelineError(
@@ -245,6 +405,7 @@ impl GstMediaDevice {
         channels: i32,
         framerate: i32,
         tx: Arc<broadcast::Sender<Arc<Buffer>>>,
+        filename: Option<String>,
     ) -> Result<gstreamer::Pipeline, GStreamerError> {
         if self.device_class == "Video/Source" {
             return Err(GStreamerError::PipelineError(
@@ -265,8 +426,7 @@ impl GstMediaDevice {
                 "Device does not support requested configuration".to_string(),
             ));
         }
-
-        self.audio_xraw_pipeline(channels, framerate, tx)
+        self.audio_xraw_pipeline(channels, framerate, tx, filename)
     }
 
     pub fn deinterleaved_audio_pipeline(
@@ -276,6 +436,7 @@ impl GstMediaDevice {
         selected_channel: i32,
         framerate: i32,
         tx: Arc<broadcast::Sender<Arc<Buffer>>>,
+        filename: Option<String>,
     ) -> Result<gstreamer::Pipeline, GStreamerError> {
         if self.device_class == "Video/Source" {
             return Err(GStreamerError::PipelineError(
@@ -297,7 +458,7 @@ impl GstMediaDevice {
             ));
         }
 
-        self.audio_deinterleaved_pipeline(selected_channel, channels, framerate, tx)
+        self.audio_deinterleaved_pipeline(selected_channel, channels, framerate, tx, filename)
     }
 
     fn audio_deinterleaved_pipeline(
@@ -306,6 +467,7 @@ impl GstMediaDevice {
         channels: i32,
         framerate: i32,
         tx: Arc<broadcast::Sender<Arc<Buffer>>>,
+        filename: Option<String>,
     ) -> Result<gstreamer::Pipeline, GStreamerError> {
         let audio_el = self.get_audio_element()?;
 
@@ -337,6 +499,16 @@ impl GstMediaDevice {
             .build()
             .map_err(|_| GStreamerError::PipelineError("Failed to create queue".to_string()))?;
 
+        let tee = gstreamer::ElementFactory::make("tee")
+            .name(random_string("tee"))
+            .build()
+            .map_err(|_| GStreamerError::PipelineError("Failed to create tee".to_string()))?;
+
+        let queue_appsink = gstreamer::ElementFactory::make("queue")
+            .name(random_string("queue-appsink"))
+            .build()
+            .map_err(|_| GStreamerError::PipelineError("Failed to create queue".to_string()))?;
+
         let broadcast_appsink = self.broadcast_appsink(tx, None)?;
 
         let pipeline = gstreamer::Pipeline::with_name(&random_string("deinterleaved-audio-xraw"));
@@ -347,6 +519,8 @@ impl GstMediaDevice {
                 &caps_element,
                 &deinterleave_element,
                 &queue,
+                &tee,
+                &queue_appsink,
                 (broadcast_appsink.upcast_ref()),
             ])
             .map_err(|_| {
@@ -369,8 +543,28 @@ impl GstMediaDevice {
             }
         });
 
-        gstreamer::Element::link_many([&queue, (broadcast_appsink.upcast_ref())])
-            .map_err(|_| GStreamerError::PipelineError("Failed to link elements".to_string()))?;
+        gstreamer::Element::link_many([&queue, &tee]).map_err(|_| {
+            GStreamerError::PipelineError("Failed to link queue and tee".to_string())
+        })?;
+
+        let tee_appsink_pad = tee.request_pad_simple("src_%u").ok_or_else(|| {
+            GStreamerError::PipelineError("Failed to request tee pad for appsink".into())
+        })?;
+
+        let queue_appsink_pad = queue_appsink
+            .static_pad("sink")
+            .ok_or_else(|| GStreamerError::PipelineError("Appsink queue has no sink pad".into()))?;
+
+        tee_appsink_pad.link(&queue_appsink_pad).map_err(|_| {
+            GStreamerError::PipelineError("Failed to link tee to appsink queue".into())
+        })?;
+
+        gstreamer::Element::link_many([&queue_appsink, broadcast_appsink.upcast_ref()])
+            .map_err(|_| GStreamerError::PipelineError("Failed to link appsink".to_string()))?;
+
+        if let Some(ref path) = filename {
+            self.add_audio_file_branch(&pipeline, &tee, path)?;
+        }
 
         Ok(pipeline)
     }
@@ -380,6 +574,7 @@ impl GstMediaDevice {
         channels: i32,
         framerate: i32,
         tx: Arc<broadcast::Sender<Arc<Buffer>>>,
+        filename: Option<String>,
     ) -> Result<gstreamer::Pipeline, GStreamerError> {
         let audio_el = self.get_audio_element()?;
 
@@ -398,18 +593,59 @@ impl GstMediaDevice {
 
         caps_element.set_property("caps", caps);
 
+        let tee = gstreamer::ElementFactory::make("tee")
+            .name(random_string("tee"))
+            .build()
+            .map_err(|_| GStreamerError::PipelineError("Failed to create tee".to_string()))?;
+
+        let queue_appsink = gstreamer::ElementFactory::make("queue")
+            .name(random_string("queue-appsink"))
+            .build()
+            .map_err(|_| GStreamerError::PipelineError("Failed to create queue".to_string()))?;
+
         let broadcast_appsink = self.broadcast_appsink(tx, None)?;
 
         let pipeline = gstreamer::Pipeline::with_name(&random_string("stream-audio-xraw"));
 
         pipeline
-            .add_many([&audio_el, &caps_element, (broadcast_appsink.upcast_ref())])
+            .add_many([&audio_el, &caps_element, &tee])
             .map_err(|_| {
                 GStreamerError::PipelineError("Failed to add elements to pipeline".to_string())
             })?;
 
-        gstreamer::Element::link_many([&audio_el, &caps_element, (broadcast_appsink.upcast_ref())])
+        gstreamer::Element::link_many([&audio_el, &caps_element, &tee])
             .map_err(|_| GStreamerError::PipelineError("Failed to link elements".to_string()))?;
+
+        pipeline
+            .add_many([&queue_appsink, broadcast_appsink.upcast_ref()])
+            .map_err(|_| GStreamerError::PipelineError("Failed to add appsink".to_string()))?;
+        gstreamer::Element::link_many([&queue_appsink, broadcast_appsink.upcast_ref()])
+            .map_err(|_| GStreamerError::PipelineError("Failed to link appsink".to_string()))?;
+
+        let tee_appsink_pad = tee.request_pad_simple("src_%u").ok_or_else(|| {
+            GStreamerError::PipelineError("Failed to request tee pad for appsink".into())
+        })?;
+
+        let queue_appsink_pad = queue_appsink
+            .static_pad("sink")
+            .ok_or_else(|| GStreamerError::PipelineError("Appsink queue has no sink pad".into()))?;
+
+        tee_appsink_pad.link(&queue_appsink_pad).map_err(|_| {
+            GStreamerError::PipelineError("Failed to link tee to appsink queue".into())
+        })?;
+
+        if let Some(ref path) = filename {
+            self.add_audio_file_branch(&pipeline, &tee, path)?;
+        }
+
+        pipeline
+            .iterate_elements()
+            .foreach(|e| {
+                let _ = e.sync_state_with_parent();
+            })
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to sync state with parent".to_string())
+            })?;
 
         Ok(pipeline)
     }
@@ -463,7 +699,14 @@ impl GstMediaDevice {
         height: i32,
         framerate: i32,
         tx: Arc<broadcast::Sender<Arc<Buffer>>>,
+        filename: Option<String>,
     ) -> Result<gstreamer::Pipeline, GStreamerError> {
+        if filename.is_some() {
+            return Err(GStreamerError::PipelineError(
+                "Filename not supported for xraw pipeline".to_string(),
+            ));
+        }
+
         let input = self.get_video_element()?;
         let caps_element = gstreamer::ElementFactory::make("capsfilter")
             .name(random_string("capsfilter"))
@@ -500,7 +743,14 @@ impl GstMediaDevice {
         height: i32,
         framerate: i32,
         tx: Arc<broadcast::Sender<Arc<Buffer>>>,
+        filename: Option<String>,
     ) -> Result<gstreamer::Pipeline, GStreamerError> {
+        if filename.is_some() {
+            return Err(GStreamerError::PipelineError(
+                "Filename not supported for H264 pipeline".to_string(),
+            ));
+        }
+
         let input = self.get_video_element()?;
         let caps_element = gstreamer::ElementFactory::make("capsfilter")
             .name(random_string("capsfilter"))
@@ -530,7 +780,6 @@ impl GstMediaDevice {
         let i420_caps = gstreamer::Caps::builder("video/x-raw")
             .field("format", "I420")
             .build();
-
         let appsink = self.broadcast_appsink(tx, Some(&i420_caps))?;
 
         let pipeline = gstreamer::Pipeline::with_name(&random_string("stream-h264"));
@@ -565,6 +814,7 @@ impl GstMediaDevice {
         height: i32,
         framerate: i32,
         tx: Arc<broadcast::Sender<Arc<Buffer>>>,
+        filename: Option<String>,
     ) -> Result<gstreamer::Pipeline, GStreamerError> {
         let input = self.get_video_element()?;
         let caps_element = gstreamer::ElementFactory::make("capsfilter")
@@ -585,21 +835,78 @@ impl GstMediaDevice {
             .build()
             .map_err(|_| GStreamerError::PipelineError("Failed to create jpegdec".to_string()))?;
 
+        let convert = gstreamer::ElementFactory::make("videoconvert")
+            .name(random_string("videoconvert"))
+            .build()
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to create videoconvert".to_string())
+            })?;
+
         let i420_caps = gstreamer::Caps::builder("video/x-raw")
             .field("format", "I420")
             .build();
+
+        let caps_filter = gstreamer::ElementFactory::make("capsfilter")
+            .name(random_string("capsfilter"))
+            .build()
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to create capsfilter".to_string())
+            })?;
+
+        caps_filter.set_property("caps", &i420_caps);
+
+        let tee = gstreamer::ElementFactory::make("tee")
+            .name(random_string("tee"))
+            .build()
+            .map_err(|_| GStreamerError::PipelineError("Failed to create tee".to_string()))?;
+
+        let queue_appsink = gstreamer::ElementFactory::make("queue")
+            .name(random_string("queue-appsink"))
+            .build()
+            .map_err(|_| GStreamerError::PipelineError("Failed to create queue".to_string()))?;
 
         let appsink = self.broadcast_appsink(tx, Some(&i420_caps))?;
 
         let pipeline = gstreamer::Pipeline::with_name(&random_string("stream-jpeg"));
 
         pipeline
-            .add_many([&input, &caps_element, &jpegdec, appsink.upcast_ref()])
+            .add_many([
+                &input,
+                &caps_element,
+                &jpegdec,
+                &convert,
+                &caps_filter,
+                &tee,
+                &queue_appsink,
+                appsink.upcast_ref(),
+            ])
             .map_err(|_| {
                 GStreamerError::PipelineError("Failed to add elements to pipeline".to_string())
             })?;
-        gstreamer::Element::link_many([&input, &caps_element, &jpegdec, appsink.upcast_ref()])
-            .map_err(|_| GStreamerError::PipelineError("Failed to link elements".to_string()))?;
+        gstreamer::Element::link_many([
+            &input,
+            &caps_element,
+            &jpegdec,
+            &convert,
+            &caps_filter,
+            &tee,
+            &queue_appsink,
+            appsink.upcast_ref(),
+        ])
+        .map_err(|_| GStreamerError::PipelineError("Failed to link elements".to_string()))?;
+
+        if let Some(ref path) = filename {
+            self.add_video_file_branch(&pipeline, &tee, path)?;
+        }
+
+        pipeline
+            .iterate_elements()
+            .foreach(|e| {
+                let _ = e.sync_state_with_parent();
+            })
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to sync state with parent".to_string())
+            })?;
 
         Ok(pipeline)
     }
@@ -635,18 +942,23 @@ impl GstMediaDevice {
             .dynamic_cast::<AppSink>()
             .map_err(|_| GStreamerError::PipelineError("Failed to cast appsink".to_string()))?;
 
+        // appsink.set_property("sync", &false);
+        appsink.set_property("emit-signals", true);
+        appsink.set_property("drop", true);
+        appsink.set_property("max-buffers", 1u32);
+
         appsink.set_callbacks(
             gstreamer_app::AppSinkCallbacks::builder()
                 .new_sample(move |sink| {
                     let sample = match sink.pull_sample() {
-                        Ok(sample) => sample,
+                        Ok(s) => s,
                         Err(_) => return Err(gstreamer::FlowError::Eos),
                     };
 
-                    // Send the sample to the broadcast channel without awaiting
                     let buffer = sample.buffer().ok_or(gstreamer::FlowError::Error)?;
-                    if tx.send(Arc::new(buffer.copy())).is_err() {
-                        return Err(gstreamer::FlowError::Error);
+
+                    if tx.receiver_count() > 0 {
+                        let _ = tx.send(Arc::new(buffer.copy()));
                     }
                     Ok(gstreamer::FlowSuccess::Ok)
                 })
@@ -657,6 +969,177 @@ impl GstMediaDevice {
         }
 
         Ok(appsink)
+    }
+
+    fn add_video_file_branch(
+        &self,
+        pipeline: &gstreamer::Pipeline,
+        tee: &gstreamer::Element,
+        path: &str,
+    ) -> Result<(), GStreamerError> {
+        let queue_file = gstreamer::ElementFactory::make("queue")
+            .name(random_string("file-queue"))
+            .build()
+            .map_err(|_| GStreamerError::PipelineError("queue".into()))?;
+
+        let convert = gstreamer::ElementFactory::make("videoconvert")
+            .name(random_string("file-videoconvert"))
+            .build()
+            .map_err(|_| GStreamerError::PipelineError("videoconvert".into()))?;
+
+        let format_filter = gstreamer::ElementFactory::make("capsfilter")
+            .name(random_string("file-capsfilter"))
+            .build()
+            .map_err(|_| GStreamerError::PipelineError("capsfilter".into()))?;
+        let caps = gstreamer::Caps::builder("video/x-raw")
+            .field("format", "I420")
+            .build();
+        format_filter.set_property("caps", &caps);
+
+        let encoder = gstreamer::ElementFactory::make("x264enc")
+            .name(random_string("file-x264enc"))
+            .build()
+            .map_err(|_| GStreamerError::PipelineError("x264enc".into()))?;
+        encoder.set_property("bitrate", 3000u32);
+        encoder.set_property_from_str("tune", "zerolatency");
+
+        let parser = gstreamer::ElementFactory::make("h264parse")
+            .name(random_string("file-h264parse"))
+            .build()
+            .map_err(|_| GStreamerError::PipelineError("h264parse".into()))?;
+
+        let muxer = gstreamer::ElementFactory::make("mp4mux")
+            .name(random_string("file-mp4mux"))
+            .build()
+            .map_err(|_| GStreamerError::PipelineError("mp4mux".into()))?;
+
+        let filesink = gstreamer::ElementFactory::make("filesink")
+            .name(random_string("file-filesink"))
+            .build()
+            .map_err(|_| GStreamerError::PipelineError("filesink".into()))?;
+        filesink.set_property("location", path);
+        filesink.set_property("sync", false);
+
+        pipeline
+            .add_many([
+                &queue_file,
+                &convert,
+                &format_filter,
+                &encoder,
+                &parser,
+                &muxer,
+                &filesink,
+            ])
+            .map_err(|_| GStreamerError::PipelineError("Failed to add file branch".into()))?;
+
+        gstreamer::Element::link_many([
+            &queue_file,
+            &convert,
+            &format_filter,
+            &encoder,
+            &parser,
+            &muxer,
+            &filesink,
+        ])
+        .map_err(|_| GStreamerError::PipelineError("Failed to link file branch".into()))?;
+
+        let tee_src_pad = tee
+            .request_pad_simple("src_%u")
+            .ok_or_else(|| GStreamerError::PipelineError("Failed to request tee pad".into()))?;
+        let queue_sink_pad = queue_file
+            .static_pad("sink")
+            .ok_or_else(|| GStreamerError::PipelineError("Queue has no sink pad".into()))?;
+
+        tee_src_pad.link(&queue_sink_pad).map_err(|_| {
+            GStreamerError::PipelineError("Failed to link tee to file branch".into())
+        })?;
+
+        Ok(())
+    }
+
+    fn add_audio_file_branch(
+        &self,
+        pipeline: &gstreamer::Pipeline,
+        tee: &gstreamer::Element,
+        path: &str,
+    ) -> Result<(), GStreamerError> {
+        let queue_file = gstreamer::ElementFactory::make("queue")
+            .name(random_string("file-queue"))
+            .build()
+            .map_err(|_| GStreamerError::PipelineError("queue".into()))?;
+
+        let convert = gstreamer::ElementFactory::make("audioconvert")
+            .name(random_string("file-audioconvert"))
+            .build()
+            .map_err(|_| GStreamerError::PipelineError("audioconvert".into()))?;
+
+        let resample = gstreamer::ElementFactory::make("audioresample")
+            .name(random_string("file-audioresample"))
+            .build()
+            .map_err(|_| GStreamerError::PipelineError("audioresample".into()))?;
+
+        let encoder = gstreamer::ElementFactory::make("avenc_aac")
+            .name(random_string("file-avenc_aac"))
+            .build()
+            .map_err(|_| GStreamerError::PipelineError("avenc_aac".into()))?;
+        encoder.set_property("bitrate", 128000i32);
+
+        let parser = gstreamer::ElementFactory::make("aacparse")
+            .name(random_string("file-aacparse"))
+            .build()
+            .map_err(|_| GStreamerError::PipelineError("aacparse".into()))?;
+
+        let muxer = gstreamer::ElementFactory::make("mp4mux")
+            .name(random_string("file-mp4mux"))
+            .build()
+            .map_err(|_| GStreamerError::PipelineError("mp4mux".into()))?;
+
+        let filesink = gstreamer::ElementFactory::make("filesink")
+            .name(random_string("file-filesink"))
+            .build()
+            .map_err(|_| GStreamerError::PipelineError("filesink".into()))?;
+        filesink.set_property("location", path);
+        filesink.set_property("sync", false);
+
+        pipeline
+            .add_many([
+                &queue_file,
+                &convert,
+                &resample,
+                &encoder,
+                &parser,
+                &muxer,
+                &filesink,
+            ])
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to ad elements to the file branch".into())
+            })?;
+
+        gstreamer::Element::link_many([
+            &queue_file,
+            &convert,
+            &resample,
+            &encoder,
+            &parser,
+            &muxer,
+            &filesink,
+        ])
+        .map_err(|_| {
+            GStreamerError::PipelineError("Failed to link elements in file branch".into())
+        })?;
+
+        let tee_src_pad = tee
+            .request_pad_simple("src_%u")
+            .ok_or_else(|| GStreamerError::PipelineError("Failed to request tee pad".into()))?;
+        let queue_sink_pad = queue_file
+            .static_pad("sink")
+            .ok_or_else(|| GStreamerError::PipelineError("Queue has no sink pad".into()))?;
+
+        tee_src_pad.link(&queue_sink_pad).map_err(|_| {
+            GStreamerError::PipelineError("Failed to link tee to file branch".into())
+        })?;
+
+        Ok(())
     }
 }
 

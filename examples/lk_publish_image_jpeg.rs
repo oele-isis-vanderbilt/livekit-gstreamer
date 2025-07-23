@@ -1,11 +1,15 @@
 use dotenvy::dotenv;
-use livekit::{Room, RoomEvent, RoomOptions};
+use livekit::{Room, RoomOptions};
 
 use livekit_api::access_token;
 use livekit_gstreamer::{
-    GstMediaStream, LKParticipant, LKParticipantError, PublishOptions, VideoPublishOptions,
+    GstMediaStream, LKParticipant, LKParticipantError, LocalFileSaveOptions, PublishOptions,
+    VideoPublishOptions,
 };
 use std::{env, sync::Arc};
+
+#[path = "./helper/wait.rs"]
+mod wait;
 
 #[tokio::main]
 async fn main() -> Result<(), LKParticipantError> {
@@ -24,7 +28,7 @@ async fn main() -> Result<(), LKParticipantError> {
         .with_name("Rust Bot Image/JPEG")
         .with_grants(access_token::VideoGrants {
             room_join: true,
-            room: "DemoRoom".to_string(),
+            room: "demo-room".to_string(),
             ..Default::default()
         })
         .to_jwt()
@@ -43,6 +47,10 @@ async fn main() -> Result<(), LKParticipantError> {
         height: 1080,
         framerate: 30,
         device_id: "/dev/video0".to_string(),
+        local_file_save_options: Some(LocalFileSaveOptions {
+            output_dir: "recordings".to_string(),
+        }),
+        // local_file_save_options: None,
     }));
 
     stream.start().await.unwrap();
@@ -57,18 +65,5 @@ async fn main() -> Result<(), LKParticipantError> {
         String::from(new_room.sid().await)
     );
 
-    while let Some(msg) = room_rx.recv().await {
-        match msg {
-            RoomEvent::Disconnected { reason } => {
-                log::info!("Disconnected from room: {:?}", reason);
-                stream.stop().await?;
-                break;
-            }
-            _ => {
-                log::info!("Received room event: {:?}", msg);
-            }
-        }
-    }
-
-    Ok(())
+    wait::wait_lk(&mut [stream], new_room.clone(), &mut room_rx).await
 }
