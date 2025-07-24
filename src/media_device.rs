@@ -2,7 +2,7 @@ use gstreamer::{prelude::*, Buffer};
 use gstreamer::{Device, DeviceMonitor};
 use gstreamer_app::AppSink;
 use once_cell::sync::Lazy;
-use serde::{Deserialize, Serialize};
+use serde::{de, Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -28,23 +28,29 @@ static GLOBAL_DEVICE_MONITOR: Lazy<Arc<Mutex<DeviceMonitor>>> = Lazy::new(|| {
 pub fn get_gst_device(path: &str) -> Option<Device> {
     let device_monitor = GLOBAL_DEVICE_MONITOR.clone();
     let device_monitor = device_monitor.lock().unwrap();
-    let device = device_monitor.devices().into_iter().find(|d| {
+    let devices = device_monitor.devices();
+
+    devices.into_iter().find(|d| {
         let props = d.properties();
 
         match props {
-            // FixMe: This only works for v4l2 devices
             Some(props) => {
-                let path_prop = props
-                    .get::<Option<String>>("object.path")
-                    .or_else(|_| props.get::<Option<String>>("device.path"));
-                path_prop
-                    .is_ok_and(|path_prop| path_prop.is_some() && path_prop.unwrap().contains(path))
+                // Try matching against multiple possible properties
+                let candidates = [
+                    props.get::<Option<String>>("object.path"),
+                    props.get::<Option<String>>("device.path"),
+                    props.get::<Option<String>>("device.id"),
+                ];
+
+                // Return true if any property matches the given path
+                candidates.iter().any(|res| {
+                    res.clone()
+                        .is_ok_and(|opt| opt.as_ref().is_some_and(|v| v.contains(path)))
+                })
             }
             None => false,
         }
-    });
-
-    device
+    })
 }
 
 fn system_time_nanos() -> i64 {
@@ -55,60 +61,72 @@ fn system_time_nanos() -> i64 {
 }
 
 fn get_device_capabilities(device: &Device) -> Vec<MediaCapability> {
-    let caps = device.caps().unwrap();
-    if device.device_class() == "Video/Source" {
+    let caps = match device.caps() {
+        Some(c) => c,
+        None => return vec![],
+    };
+
+    if device.device_class() == "Video/Source" || device.device_class() == "Source/Video" {
         caps.iter()
-            .map(|s| {
-                let structure = s;
-                let width = structure.get::<i32>("width").unwrap();
-                let height = structure.get::<i32>("height").unwrap();
+            .filter_map(|structure| {
+                let width = structure.get::<i32>("width").ok();
+                let height = structure.get::<i32>("height").ok();
+
                 let mut framerates = vec![];
-                if let Ok(framerate_fields) = structure.get::<gstreamer::List>("framerate") {
-                    let frates: Vec<i32> = framerate_fields
-                        .iter()
-                        .map(|f| {
-                            let f = f.get::<gstreamer::Fraction>();
-                            match f {
-                                Ok(f) => f.numer() / f.denom(),
-                                Err(_) => 0,
-                            }
-                        })
-                        .collect();
-                    framerates.extend(frates);
+                if let Ok(framerate_list) = structure.get::<gstreamer::List>("framerate") {
+                    for val in framerate_list.iter() {
+                        if let Ok(frac) = val.get::<gstreamer::Fraction>() {
+                            framerates.push(frac.numer() as f64 / frac.denom() as f64);
+                        }
+                    }
                 } else if let Ok(framerate) = structure.get::<gstreamer::Fraction>("framerate") {
-                    framerates.push(framerate.numer() / framerate.denom());
+                    framerates.push(framerate.numer() as f64 / framerate.denom() as f64);
                 }
 
                 let codec = structure.name().to_string();
 
-                MediaCapability::Video(VideoCapability {
-                    width,
-                    height,
-                    framerates,
+                Some(MediaCapability::Video(VideoCapability {
+                    width: width.unwrap_or(0),
+                    height: height.unwrap_or(0),
+                    framerates: framerates.iter().map(|&f| f as i32).collect(),
                     codec,
-                })
+                }))
             })
             .collect()
     } else {
         caps.iter()
-            .map(|s| {
-                let structure = s;
-                let channels = structure.get::<i32>("channels").unwrap();
-                if let Ok(framerate_fields) = structure.get::<gstreamer::IntRange<i32>>("rate") {
-                    let codec = structure.name().to_string();
+            .filter_map(|structure| {
+                let channels = structure.get::<i32>("channels").unwrap_or(0);
 
-                    MediaCapability::Audio(AudioCapability {
-                        channels,
-                        framerates: (framerate_fields.min(), framerate_fields.max()),
-                        codec,
-                    })
-                } else {
-                    MediaCapability::Audio(AudioCapability {
-                        channels,
-                        framerates: (0, 0),
-                        codec: "audio/x-raw".to_string(),
-                    })
+                let mut rates = vec![];
+                // Try to get a list of rates
+                if let Ok(rate_list) = structure.get::<gstreamer::List>("rate") {
+                    for val in rate_list.iter() {
+                        if let Ok(rate) = val.get::<i32>() {
+                            rates.push(rate);
+                        }
+                    }
+                } else if let Ok(rate) = structure.get::<i32>("rate") {
+                    rates.push(rate);
+                } else if let Ok(rate_range) = structure.get::<gstreamer::IntRange<i32>>("rate") {
+                    rates.push(rate_range.min());
+                    rates.push(rate_range.max());
                 }
+
+                let codec = structure.name().to_string();
+
+                Some(MediaCapability::Audio(AudioCapability {
+                    channels,
+                    framerates: if rates.is_empty() {
+                        (0, 0)
+                    } else {
+                        (
+                            *rates.iter().min().unwrap_or(&0),
+                            *rates.iter().max().unwrap_or(&0),
+                        )
+                    },
+                    codec,
+                }))
             })
             .collect()
     }
@@ -116,18 +134,37 @@ fn get_device_capabilities(device: &Device) -> Vec<MediaCapability> {
 
 fn get_device_path(device: &Device) -> Option<String> {
     let props = device.properties()?;
+    let mut path = None;
 
-    let path = if device.device_class() == "Audio/Source" {
-        props.get("api.alsa.path").ok()
-    } else {
-        props.get("api.v4l2.path").ok()
-    };
+    #[cfg(target_os = "linux")]
+    {
+        path = if device.device_class() == "Audio/Source" {
+            props.get("api.alsa.path").ok()
+        } else {
+            props.get("api.v4l2.path").ok()
+        };
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        path = props
+            .get("device.path")
+            .unwrap_or_else(|_| props.get("device.id").ok().flatten());
+    }
 
     #[allow(clippy::manual_unwrap_or_default)]
     path.or_else(|| match props.get::<Option<String>>("device.path") {
         Ok(path) => path,
         Err(_) => None,
     })
+}
+
+fn get_device_class(device: &Device) -> String {
+    match device.device_class().as_str() {
+        "Video/Source" | "Source/Video" => "Video/Source".to_string(),
+        "Audio/Source" | "Source/Audio" => "Audio/Source".to_string(),
+        _ => device.device_class().to_string(),
+    }
 }
 
 pub fn get_devices_info() -> Vec<MediaDeviceInfo> {
@@ -140,7 +177,7 @@ pub fn get_devices_info() -> Vec<MediaDeviceInfo> {
             let path = get_device_path(&d)?;
             let caps = get_device_capabilities(&d);
             let display_name = d.display_name().into();
-            let class = d.device_class().into();
+            let class = get_device_class(&d);
             Some(MediaDeviceInfo {
                 device_path: path,
                 display_name,
@@ -291,7 +328,15 @@ pub async fn run_pipeline(
         }
     }
 
-    pipeline.set_state(gstreamer::State::Playing).unwrap();
+    pipeline
+        .set_state(gstreamer::State::Playing)
+        .map_err(|err| {
+            println!(
+                "Failed to set pipeline to Playing state: {:?}",
+                err.to_string()
+            );
+            GStreamerError::PipelineError("Failed to set pipeline to Playing state".to_string())
+        })?;
     let bus = pipeline.bus().unwrap();
     for msg in bus.iter_timed(gstreamer::ClockTime::NONE) {
         use gstreamer::MessageView;

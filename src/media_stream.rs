@@ -71,6 +71,20 @@ pub async fn create_dir(options: &LocalFileSaveOptions) -> Result<PathBuf, GStre
     Ok(output_dir)
 }
 
+fn strict_sanitize_filename<S: AsRef<str>>(filename: S) -> String {
+    filename
+        .as_ref()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
 impl GstMediaStream {
     pub fn new(publish_options: PublishOptions) -> Self {
         Self {
@@ -126,7 +140,7 @@ impl GstMediaStream {
                         "{}-{}-{}-{}.mp4",
                         "video",
                         device.display_name.replace(" ", "_"),
-                        video_options.device_id.replace(" ", "_").replace("/", "_"),
+                        strict_sanitize_filename(&video_options.device_id),
                         chrono::Local::now().format("%Y-%m-%d-%H-%M-%S")
                     );
 
@@ -168,8 +182,8 @@ impl GstMediaStream {
                             ),
                             None => device.display_name.replace(" ", "_"),
                         },
-                        audio_options.device_id.replace(" ", "_"),
-                        audio_options.device_id.replace(" ", "_").replace("/", "_"),
+                        strict_sanitize_filename(&audio_options.device_id),
+                        strict_sanitize_filename(&audio_options.device_id),
                         chrono::Local::now().format("%Y-%m-%d-%H-%M-%S")
                     );
 
