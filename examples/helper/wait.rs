@@ -3,6 +3,8 @@ use std::sync::Arc;
 use livekit::{Room, RoomEvent};
 use livekit_gstreamer::{GStreamerError, GstMediaStream, LKParticipantError};
 use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::broadcast::error::RecvError;
+
 
 #[allow(dead_code)]
 pub async fn wait_lk(
@@ -72,6 +74,9 @@ pub async fn wait_stream(
                             "Received frame at {:?} microseconds",
                             frame.pts().unwrap_or_default().useconds()
                         );
+                    }
+                    Err(RecvError::Lagged(_)) => {
+                        println!("Frame receiver lagged, dropping frames");
                     }
                     Err(err) => {
                         println!("Error receiving frame: {:?}", err);

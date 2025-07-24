@@ -34,19 +34,6 @@ async fn main() -> Result<(), LKParticipantError> {
         .to_jwt()
         .unwrap();
 
-    let token_2 = access_token::AccessToken::with_api_key(&api_key, &api_secret)
-        .with_identity("rust-bot-image/jpeg-2")
-        .with_name("Rust Bot Image/JPEG 2")
-        .with_grants(access_token::VideoGrants {
-            room_join: true,
-            room: "demo-room".to_string(),
-            ..Default::default()
-        })
-        .to_jwt()
-        .unwrap();
-
-    println!("Token 2: {}", token_2);
-
     let (room, mut room_rx) = Room::connect(&url, &token, RoomOptions::default())
         .await
         .unwrap();
@@ -60,7 +47,11 @@ async fn main() -> Result<(), LKParticipantError> {
         height: 720,
         framerate: 30,
         device_id: r"\\?\usb#vid_0c45&pid_6a10&mi_00#6&303dd63&0&0000#{e5323777-f976-4f5b-9b55-b94699c46e44}\global".to_string(),
-        local_file_save_options: None
+        local_file_save_options: {
+            Some(LocalFileSaveOptions {
+                output_dir: "recordings".to_string(),
+            })
+        }
     }));
 
     stream.start().await.unwrap();
