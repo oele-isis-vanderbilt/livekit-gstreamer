@@ -7,6 +7,11 @@ mod wait;
 
 #[tokio::main]
 async fn main() -> Result<(), GStreamerError> {
+    // Only run on Linux
+    if !cfg!(target_os = "linux") {
+        panic!("This example is only supported on Linux");
+    }
+
     gstreamer::init().map_err(|e| {
         GStreamerError::PipelineError(format!("Failed to initialize gstreamer: {}", e))
     })?;

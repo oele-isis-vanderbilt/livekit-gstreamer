@@ -622,6 +622,12 @@ impl GstMediaDevice {
         filename: Option<String>,
     ) -> Result<gstreamer::Pipeline, GStreamerError> {
         let audio_el = self.get_audio_element()?;
+        let convert = gstreamer::ElementFactory::make("audioconvert")
+            .name(random_string("audioconvert"))
+            .build()
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to create audioconvert".to_string())
+            })?;
 
         let caps = gstreamer::Caps::builder("audio/x-raw")
             .field("format", "S16LE")
@@ -653,12 +659,12 @@ impl GstMediaDevice {
         let pipeline = gstreamer::Pipeline::with_name(&random_string("stream-audio-xraw"));
 
         pipeline
-            .add_many([&audio_el, &caps_element, &tee])
+            .add_many([&audio_el, &convert, &caps_element, &tee])
             .map_err(|_| {
                 GStreamerError::PipelineError("Failed to add elements to pipeline".to_string())
             })?;
 
-        gstreamer::Element::link_many([&audio_el, &caps_element, &tee])
+        gstreamer::Element::link_many([&audio_el, &convert, &caps_element, &tee])
             .map_err(|_| GStreamerError::PipelineError("Failed to link elements".to_string()))?;
 
         pipeline
@@ -967,6 +973,8 @@ impl GstMediaDevice {
 
     fn get_audio_element(&self) -> Result<gstreamer::Element, GStreamerError> {
         let device = get_gst_device(&self.device_path).unwrap();
+        println!("Device: {:?}", device);
+        println!("Device props: {:?}", device.caps());
         let random_source_name = random_string("source");
         let element = device
             .create_element(Some(random_source_name.as_str()))

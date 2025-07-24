@@ -13,7 +13,12 @@ mod wait;
 
 #[tokio::main]
 async fn main() -> Result<(), LKParticipantError> {
+    // Only run on Linux
+    if !cfg!(target_os = "linux") {
+        panic!("This example is only supported on Linux");
+    }
     dotenv().ok();
+
     // Initialize gstreamer
     gstreamer::init().unwrap();
     std::env::set_var("RUST_LOG", "info");

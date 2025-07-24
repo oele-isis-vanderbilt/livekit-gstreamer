@@ -172,17 +172,16 @@ impl GstMediaStream {
                 if let Some(local_file_save_options) = &audio_options.local_file_save_options {
                     let op_dir = create_dir(local_file_save_options).await?;
                     let filename_str = format!(
-                        "{}-{}-{}-{}-{}.m4a",
+                        "{}-{}-{}-{}.m4a",
                         "audio",
                         match audio_options.selected_channel {
                             Some(channel) => format!(
                                 "{}-channel-{}",
-                                device.display_name.replace(" ", "_"),
+                                strict_sanitize_filename(&device.display_name),
                                 channel
                             ),
-                            None => device.display_name.replace(" ", "_"),
+                            None => strict_sanitize_filename(&device.display_name),
                         },
-                        strict_sanitize_filename(&audio_options.device_id),
                         strict_sanitize_filename(&audio_options.device_id),
                         chrono::Local::now().format("%Y-%m-%d-%H-%M-%S")
                     );
