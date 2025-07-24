@@ -59,7 +59,7 @@ async fn main() -> Result<(), LKParticipantError> {
                 output_dir: "recordings".to_string(),
             }),
             channels: 2,
-            selected_channel: None
+            selected_channel: Some(1)
         }))
     };
 

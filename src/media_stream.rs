@@ -72,7 +72,7 @@ pub async fn create_dir(options: &LocalFileSaveOptions) -> Result<PathBuf, GStre
 }
 
 fn strict_sanitize_filename<S: AsRef<str>>(filename: S) -> String {
-    filename
+    let s = filename
         .as_ref()
         .chars()
         .map(|c| {
@@ -82,7 +82,14 @@ fn strict_sanitize_filename<S: AsRef<str>>(filename: S) -> String {
                 '_'
             }
         })
-        .collect()
+        .collect::<String>();
+
+    // Return the first 10 characters of the sanitized filename
+    if s.len() > 10 {
+        s[..10].to_string()
+    } else {
+        s
+    }
 }
 
 impl GstMediaStream {
@@ -176,7 +183,7 @@ impl GstMediaStream {
                         "audio",
                         match audio_options.selected_channel {
                             Some(channel) => format!(
-                                "{}-channel-{}",
+                                "{}-{}",
                                 strict_sanitize_filename(&device.display_name),
                                 channel
                             ),
