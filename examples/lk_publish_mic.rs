@@ -33,7 +33,7 @@ async fn main() -> Result<(), LKParticipantError> {
         .with_name("Rust Bot Microphone")
         .with_grants(access_token::VideoGrants {
             room_join: true,
-            room: "demo-room".to_string(),
+            room: "DemoRoom".to_string(),
             ..Default::default()
         })
         .to_jwt()
@@ -42,7 +42,7 @@ async fn main() -> Result<(), LKParticipantError> {
     let mut stream = if cfg!(target_os = "linux") {
         GstMediaStream::new(PublishOptions::Audio(AudioPublishOptions {
             codec: "audio/x-raw".to_string(),
-            device_id: "hw:3".to_string(),
+            device_id: "front:1".to_string(),
             framerate: 48000,
             channels: 1,
             selected_channel: None,
