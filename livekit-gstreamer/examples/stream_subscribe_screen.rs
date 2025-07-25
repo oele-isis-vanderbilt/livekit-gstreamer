@@ -31,7 +31,7 @@ async fn main() -> Result<(), GStreamerError> {
             width: 1920,
             height: 1080,
             framerate: 30,
-            screen_id_or_name: "65537".to_string(),
+            screen_id_or_name: "131073".to_string(),
             local_file_save_options: Some(LocalFileSaveOptions {
                 output_dir: "recordings".to_string(),
             }),
