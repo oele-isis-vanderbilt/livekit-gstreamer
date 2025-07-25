@@ -71,6 +71,27 @@ pub async fn create_dir(options: &LocalFileSaveOptions) -> Result<PathBuf, GStre
     Ok(output_dir)
 }
 
+fn strict_sanitize_filename<S: AsRef<str>>(filename: S) -> String {
+    let s = filename
+        .as_ref()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+
+    // Return the first 10 characters of the sanitized filename
+    if s.len() > 10 {
+        s[..10].to_string()
+    } else {
+        s
+    }
+}
+
 impl GstMediaStream {
     pub fn new(publish_options: PublishOptions) -> Self {
         Self {
@@ -126,7 +147,7 @@ impl GstMediaStream {
                         "{}-{}-{}-{}.mp4",
                         "video",
                         device.display_name.replace(" ", "_"),
-                        video_options.device_id.replace(" ", "_").replace("/", "_"),
+                        strict_sanitize_filename(&video_options.device_id),
                         chrono::Local::now().format("%Y-%m-%d-%H-%M-%S")
                     );
 
@@ -158,18 +179,17 @@ impl GstMediaStream {
                 if let Some(local_file_save_options) = &audio_options.local_file_save_options {
                     let op_dir = create_dir(local_file_save_options).await?;
                     let filename_str = format!(
-                        "{}-{}-{}-{}-{}.m4a",
+                        "{}-{}-{}-{}.m4a",
                         "audio",
                         match audio_options.selected_channel {
                             Some(channel) => format!(
-                                "{}-channel-{}",
-                                device.display_name.replace(" ", "_"),
+                                "{}-{}",
+                                strict_sanitize_filename(&device.display_name),
                                 channel
                             ),
-                            None => device.display_name.replace(" ", "_"),
+                            None => strict_sanitize_filename(&device.display_name),
                         },
-                        audio_options.device_id.replace(" ", "_"),
-                        audio_options.device_id.replace(" ", "_").replace("/", "_"),
+                        strict_sanitize_filename(&audio_options.device_id),
                         chrono::Local::now().format("%Y-%m-%d-%H-%M-%S")
                     );
 

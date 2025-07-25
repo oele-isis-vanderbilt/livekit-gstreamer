@@ -1,7 +1,5 @@
 use gstreamer::{prelude::*, Buffer};
-use gstreamer::{Device, DeviceMonitor};
 use gstreamer_app::AppSink;
-use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -9,147 +7,14 @@ use std::sync::Mutex;
 use thiserror::Error;
 use tokio::sync::broadcast;
 
+use crate::get_device_capabilities;
+use crate::get_gst_device;
 use crate::utils::random_string;
+use crate::utils::system_time_nanos;
 
 const SUPPORTED_VIDEO_CODECS: [&str; 2] = ["video/x-h264", "image/jpeg"];
 const SUPPORTED_AUDIO_CODECS: [&str; 1] = ["audio/x-raw"];
 const VIDEO_FRAME_FORMAT: &str = "I420";
-
-static GLOBAL_DEVICE_MONITOR: Lazy<Arc<Mutex<DeviceMonitor>>> = Lazy::new(|| {
-    let monitor = DeviceMonitor::new();
-    monitor.add_filter(Some("Video/Source"), None);
-    monitor.add_filter(Some("Audio/Source"), None);
-    if let Err(err) = monitor.start() {
-        eprintln!("Failed to start global device monitor: {:?}", err);
-    }
-    Arc::new(Mutex::new(monitor))
-});
-
-pub fn get_gst_device(path: &str) -> Option<Device> {
-    let device_monitor = GLOBAL_DEVICE_MONITOR.clone();
-    let device_monitor = device_monitor.lock().unwrap();
-    let device = device_monitor.devices().into_iter().find(|d| {
-        let props = d.properties();
-
-        match props {
-            // FixMe: This only works for v4l2 devices
-            Some(props) => {
-                let path_prop = props
-                    .get::<Option<String>>("object.path")
-                    .or_else(|_| props.get::<Option<String>>("device.path"));
-                path_prop
-                    .is_ok_and(|path_prop| path_prop.is_some() && path_prop.unwrap().contains(path))
-            }
-            None => false,
-        }
-    });
-
-    device
-}
-
-fn system_time_nanos() -> i64 {
-    let now = std::time::SystemTime::now();
-    now.duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as i64)
-        .unwrap_or(0)
-}
-
-fn get_device_capabilities(device: &Device) -> Vec<MediaCapability> {
-    let caps = device.caps().unwrap();
-    if device.device_class() == "Video/Source" {
-        caps.iter()
-            .map(|s| {
-                let structure = s;
-                let width = structure.get::<i32>("width").unwrap();
-                let height = structure.get::<i32>("height").unwrap();
-                let mut framerates = vec![];
-                if let Ok(framerate_fields) = structure.get::<gstreamer::List>("framerate") {
-                    let frates: Vec<i32> = framerate_fields
-                        .iter()
-                        .map(|f| {
-                            let f = f.get::<gstreamer::Fraction>();
-                            match f {
-                                Ok(f) => f.numer() / f.denom(),
-                                Err(_) => 0,
-                            }
-                        })
-                        .collect();
-                    framerates.extend(frates);
-                } else if let Ok(framerate) = structure.get::<gstreamer::Fraction>("framerate") {
-                    framerates.push(framerate.numer() / framerate.denom());
-                }
-
-                let codec = structure.name().to_string();
-
-                MediaCapability::Video(VideoCapability {
-                    width,
-                    height,
-                    framerates,
-                    codec,
-                })
-            })
-            .collect()
-    } else {
-        caps.iter()
-            .map(|s| {
-                let structure = s;
-                let channels = structure.get::<i32>("channels").unwrap();
-                if let Ok(framerate_fields) = structure.get::<gstreamer::IntRange<i32>>("rate") {
-                    let codec = structure.name().to_string();
-
-                    MediaCapability::Audio(AudioCapability {
-                        channels,
-                        framerates: (framerate_fields.min(), framerate_fields.max()),
-                        codec,
-                    })
-                } else {
-                    MediaCapability::Audio(AudioCapability {
-                        channels,
-                        framerates: (0, 0),
-                        codec: "audio/x-raw".to_string(),
-                    })
-                }
-            })
-            .collect()
-    }
-}
-
-fn get_device_path(device: &Device) -> Option<String> {
-    let props = device.properties()?;
-
-    let path = if device.device_class() == "Audio/Source" {
-        props.get("api.alsa.path").ok()
-    } else {
-        props.get("api.v4l2.path").ok()
-    };
-
-    #[allow(clippy::manual_unwrap_or_default)]
-    path.or_else(|| match props.get::<Option<String>>("device.path") {
-        Ok(path) => path,
-        Err(_) => None,
-    })
-}
-
-pub fn get_devices_info() -> Vec<MediaDeviceInfo> {
-    let device_monitor = GLOBAL_DEVICE_MONITOR.clone();
-    let device_monitor = device_monitor.lock().unwrap();
-    let devices = device_monitor.devices();
-    devices
-        .into_iter()
-        .filter_map(|d| {
-            let path = get_device_path(&d)?;
-            let caps = get_device_capabilities(&d);
-            let display_name = d.display_name().into();
-            let class = d.device_class().into();
-            Some(MediaDeviceInfo {
-                device_path: path,
-                display_name,
-                capabilities: caps,
-                device_class: class,
-            })
-        })
-        .collect()
-}
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
 struct FileSinkTiming {
@@ -291,7 +156,15 @@ pub async fn run_pipeline(
         }
     }
 
-    pipeline.set_state(gstreamer::State::Playing).unwrap();
+    pipeline
+        .set_state(gstreamer::State::Playing)
+        .map_err(|err| {
+            println!(
+                "Failed to set pipeline to Playing state: {:?}",
+                err.to_string()
+            );
+            GStreamerError::PipelineError("Failed to set pipeline to Playing state".to_string())
+        })?;
     let bus = pipeline.bus().unwrap();
     for msg in bus.iter_timed(gstreamer::ClockTime::NONE) {
         use gstreamer::MessageView;
@@ -470,6 +343,12 @@ impl GstMediaDevice {
         filename: Option<String>,
     ) -> Result<gstreamer::Pipeline, GStreamerError> {
         let audio_el = self.get_audio_element()?;
+        let convert = gstreamer::ElementFactory::make("audioconvert")
+            .name(random_string("audioconvert"))
+            .build()
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to create audioconvert".to_string())
+            })?;
 
         let caps = gstreamer::Caps::builder("audio/x-raw")
             .field("format", "S16LE")
@@ -516,6 +395,7 @@ impl GstMediaDevice {
         pipeline
             .add_many([
                 &audio_el,
+                &convert,
                 &caps_element,
                 &deinterleave_element,
                 &queue,
@@ -527,7 +407,7 @@ impl GstMediaDevice {
                 GStreamerError::PipelineError("Failed to add elements to pipeline".to_string())
             })?;
 
-        gstreamer::Element::link_many([&audio_el, &caps_element, &deinterleave_element])
+        gstreamer::Element::link_many([&audio_el, &convert, &caps_element, &deinterleave_element])
             .map_err(|_| GStreamerError::PipelineError("Failed to link elements".to_string()))?;
 
         let cloned = queue.clone();
@@ -577,6 +457,12 @@ impl GstMediaDevice {
         filename: Option<String>,
     ) -> Result<gstreamer::Pipeline, GStreamerError> {
         let audio_el = self.get_audio_element()?;
+        let convert = gstreamer::ElementFactory::make("audioconvert")
+            .name(random_string("audioconvert"))
+            .build()
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to create audioconvert".to_string())
+            })?;
 
         let caps = gstreamer::Caps::builder("audio/x-raw")
             .field("format", "S16LE")
@@ -608,12 +494,12 @@ impl GstMediaDevice {
         let pipeline = gstreamer::Pipeline::with_name(&random_string("stream-audio-xraw"));
 
         pipeline
-            .add_many([&audio_el, &caps_element, &tee])
+            .add_many([&audio_el, &convert, &caps_element, &tee])
             .map_err(|_| {
                 GStreamerError::PipelineError("Failed to add elements to pipeline".to_string())
             })?;
 
-        gstreamer::Element::link_many([&audio_el, &caps_element, &tee])
+        gstreamer::Element::link_many([&audio_el, &convert, &caps_element, &tee])
             .map_err(|_| GStreamerError::PipelineError("Failed to link elements".to_string()))?;
 
         pipeline
@@ -922,6 +808,8 @@ impl GstMediaDevice {
 
     fn get_audio_element(&self) -> Result<gstreamer::Element, GStreamerError> {
         let device = get_gst_device(&self.device_path).unwrap();
+        println!("Device: {:?}", device);
+        println!("Device props: {:?}", device.caps());
         let random_source_name = random_string("source");
         let element = device
             .create_element(Some(random_source_name.as_str()))

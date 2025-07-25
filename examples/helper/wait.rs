@@ -1,8 +1,10 @@
-use std::sync::Arc;
-
+use gstreamer::Buffer;
 use livekit::{Room, RoomEvent};
 use livekit_gstreamer::{GStreamerError, GstMediaStream, LKParticipantError};
+use std::sync::Arc;
+use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::{broadcast, mpsc};
 
 #[allow(dead_code)]
 pub async fn wait_lk(
@@ -49,40 +51,64 @@ pub async fn wait_lk(
 }
 
 #[allow(dead_code)]
-pub async fn wait_stream(
-    stream: &mut GstMediaStream,
-    mut frame_rx: tokio::sync::broadcast::Receiver<Arc<gstreamer::Buffer>>,
-    mut close_rx: tokio::sync::broadcast::Receiver<()>,
+pub async fn wait_streams(
+    streams: &mut [GstMediaStream],
+    frame_rxs: Vec<broadcast::Receiver<Arc<Buffer>>>,
+    close_rxs: Vec<broadcast::Receiver<()>>,
 ) -> Result<(), GStreamerError> {
-    loop {
-        tokio::select! {
+    println!("Waiting for multiple streams...");
 
-            _ = tokio::signal::ctrl_c() => {
-                println!("Received Ctrl+C, stopping stream");
-                break;
-            }
-            _ = close_rx.recv() => {
-                println!("Stream closed");
-                break;
-            }
-            frame = frame_rx.recv() => {
-                match frame {
-                    Ok(frame) => {
-                        println!(
-                            "Received frame at {:?} microseconds",
-                            frame.pts().unwrap_or_default().useconds()
-                        );
-                    }
-                    Err(err) => {
-                        println!("Error receiving frame: {:?}", err);
+    let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
+
+    for ((mut frame_rx, mut close_rx), stream_index) in
+        frame_rxs.into_iter().zip(close_rxs).zip(0..)
+    {
+        let shutdown_tx = shutdown_tx.clone();
+
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = close_rx.recv() => {
+                        println!("Stream {stream_index} closed");
+                        let _ = shutdown_tx.send(()).await;
                         break;
+                    }
+                    result = frame_rx.recv() => {
+                        match result {
+                            Ok(buffer) => {
+                                println!(
+                                    "Stream {stream_index}: Received frame at {:?} µs ({} bytes)",
+                                    buffer.pts().unwrap_or_default().useconds(),
+                                    buffer.size()
+                                );
+                            }
+                            Err(RecvError::Lagged(_)) => {
+                                println!("Stream {stream_index}: Frame lagged, dropping...");
+                            }
+                            Err(RecvError::Closed) => {
+                                println!("Stream {stream_index}: Receiver closed");
+                                let _ = shutdown_tx.send(()).await;
+                                break;
+                            }
+                        }
                     }
                 }
             }
+        });
+    }
+
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {
+            println!("Received Ctrl+C");
+        }
+        _ = shutdown_rx.recv() => {
+            println!("One of the streams terminated");
         }
     }
 
-    stream.stop().await?;
+    for stream in streams.iter_mut() {
+        stream.stop().await?;
+    }
 
     Ok(())
 }
