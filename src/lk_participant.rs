@@ -156,6 +156,46 @@ impl LKParticipant {
 
                 Ok(track_sid)
             }
+            PublishOptions::Screen(details) => {
+                let rtc_source = NativeVideoSource::new(VideoResolution {
+                    width: details.width as u32,
+                    height: details.height as u32,
+                });
+
+                let track = LocalVideoTrack::create_video_track(
+                    &track_name,
+                    RtcVideoSource::Native(rtc_source.clone()),
+                );
+
+                let track_sid = random_string("screen-track");
+
+                let task = tokio::spawn(Self::video_track_task(
+                    close_rx,
+                    frames_rx,
+                    rtc_source.clone(),
+                ));
+
+                self.room
+                    .local_participant()
+                    .publish_track(
+                        LocalTrack::Video(track.clone()),
+                        TrackPublishOptions {
+                            source: TrackSource::Screenshare,
+                            ..Default::default()
+                        },
+                    )
+                    .await?;
+
+                self.published_tracks.insert(
+                    track_sid.clone(),
+                    TrackHandle {
+                        track: LocalTrack::Video(track),
+                        task,
+                    },
+                );
+
+                Ok(track_sid)
+            }
         }
     }
 

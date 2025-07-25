@@ -8,9 +8,9 @@ use thiserror::Error;
 use tokio::sync::broadcast;
 
 use crate::get_device_capabilities;
-use crate::get_gst_device;
 use crate::utils::random_string;
 use crate::utils::system_time_nanos;
+use crate::{get_gst_device, get_monitor};
 
 const SUPPORTED_VIDEO_CODECS: [&str; 2] = ["video/x-h264", "image/jpeg"];
 const SUPPORTED_AUDIO_CODECS: [&str; 1] = ["audio/x-raw"];
@@ -226,9 +226,143 @@ impl GstMediaDevice {
         Ok(device)
     }
 
+    pub fn from_screen_id_or_name(screen_id_or_name: &str) -> Result<Self, GStreamerError> {
+        let monitor = get_monitor(screen_id_or_name)
+            .ok_or_else(|| GStreamerError::DeviceError("No screen found".to_string()))?;
+
+        let device = GstMediaDevice {
+            display_name: monitor.display_name,
+            device_class: "Screen/Source".to_string(),
+            device_path: monitor.device_path,
+        };
+
+        Ok(device)
+    }
+
     pub fn capabilities(&self) -> Vec<MediaCapability> {
+        if self.device_class == "Screen/Source" {
+            return get_monitor(&self.device_path).map_or(vec![], |m| m.capabilities);
+        }
         let device = get_gst_device(&self.device_path).unwrap();
         get_device_capabilities(&device)
+    }
+
+    pub fn screen_share_pipeline(
+        &self,
+        codec: &str,
+        width: i32,
+        height: i32,
+        framerate: i32,
+        tx: Arc<broadcast::Sender<Arc<Buffer>>>,
+        filename: Option<String>,
+    ) -> Result<gstreamer::Pipeline, GStreamerError> {
+        if self.device_class != "Screen/Source" {
+            return Err(GStreamerError::PipelineError(
+                "Device is not a screen source".to_string(),
+            ));
+        }
+
+        let can_support = self.supports_screen_share(codec, width, height, framerate);
+
+        if !can_support {
+            return Err(GStreamerError::PipelineError(
+                "Device does not support requested configuration".to_string(),
+            ));
+        }
+
+        let element = self.get_screen_element()?;
+
+        let video_convert = gstreamer::ElementFactory::make("videoconvert")
+            .name(random_string("videoconvert"))
+            .build()
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to create videoconvert".to_string())
+            })?;
+
+        let video_scale = gstreamer::ElementFactory::make("videoscale")
+            .name(random_string("videoscale"))
+            .build()
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to create videoscale".to_string())
+            })?;
+
+        let caps = gstreamer::Caps::builder("video/x-raw")
+            .field("format", VIDEO_FRAME_FORMAT)
+            .field("width", width)
+            .field("height", height)
+            .field("framerate", gstreamer::Fraction::new(framerate, 1))
+            .field("pixel-aspect-ratio", gstreamer::Fraction::new(1, 1))
+            .build();
+
+        let caps_filter = gstreamer::ElementFactory::make("capsfilter")
+            .name(random_string("capsfilter"))
+            .build()
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to create capsfilter".to_string())
+            })?;
+
+        caps_filter.set_property("caps", &caps);
+
+        let tee = gstreamer::ElementFactory::make("tee")
+            .name(random_string("tee"))
+            .build()
+            .map_err(|_| GStreamerError::PipelineError("Failed to create tee".to_string()))?;
+
+        let queue_appsink = gstreamer::ElementFactory::make("queue")
+            .name(random_string("queue-appsink"))
+            .build()
+            .map_err(|_| GStreamerError::PipelineError("Failed to create queue".to_string()))?;
+
+        let broadcast_appsink = self.broadcast_appsink(tx, Some(&caps))?;
+
+        let pipeline = gstreamer::Pipeline::with_name(&random_string("stream-screen-share"));
+
+        pipeline
+            .add_many([
+                &element,
+                &video_convert,
+                &video_scale,
+                &caps_filter,
+                &tee,
+                &queue_appsink,
+                broadcast_appsink.upcast_ref(),
+            ])
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to add elements to pipeline".to_string())
+            })?;
+
+        gstreamer::Element::link_many([&element, &video_convert, &video_scale, &caps_filter, &tee])
+            .map_err(|e| GStreamerError::PipelineError(e.to_string()))?;
+
+        let tee_appsink_pad = tee.request_pad_simple("src_%u").ok_or_else(|| {
+            GStreamerError::PipelineError("Failed to request tee pad for appsink".into())
+        })?;
+
+        let queue_appsink_pad = queue_appsink
+            .static_pad("sink")
+            .ok_or_else(|| GStreamerError::PipelineError("Appsink queue has no sink pad".into()))?;
+
+        tee_appsink_pad.link(&queue_appsink_pad).map_err(|_| {
+            GStreamerError::PipelineError("Failed to link tee to appsink queue".into())
+        })?;
+
+        gstreamer::Element::link_many([&queue_appsink, broadcast_appsink.upcast_ref()])
+            .map_err(|_| GStreamerError::PipelineError("Failed to link appsink".to_string()))?;
+
+        if let Some(ref path) = filename {
+            self.add_video_file_branch(&pipeline, &tee, path)?;
+        }
+
+        pipeline
+            .iterate_elements()
+            .foreach(|e| {
+                let _ = e.sync_state_with_parent();
+            })
+            .map_err(|_| {
+                GStreamerError::PipelineError("Failed to sync state with parent".to_string())
+            })?;
+
+        Ok(pipeline)
     }
 
     pub fn video_pipeline(
@@ -578,6 +712,33 @@ impl GstMediaDevice {
         })
     }
 
+    pub fn supports_screen_share(
+        &self,
+        codec: &str,
+        width: i32,
+        height: i32,
+        framerate: i32,
+    ) -> bool {
+        if self.device_class != "Screen/Source" {
+            return false;
+        }
+        let caps = self.capabilities();
+        let caps = caps
+            .iter()
+            .filter_map(|c| match c {
+                MediaCapability::Screen(c) => Some(c),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        caps.iter().any(|c| {
+            c.codec == codec
+                && c.width >= width
+                && c.height >= height
+                && c.framerates.contains(&framerate)
+        })
+    }
+
     //FixMe: This Pipeline doesn't work for all devices
     fn video_xraw_pipeline(
         &self,
@@ -795,6 +956,32 @@ impl GstMediaDevice {
             })?;
 
         Ok(pipeline)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn get_screen_element(&self) -> Result<gstreamer::Element, GStreamerError> {
+        let monitor = get_monitor(&self.device_path)
+            .ok_or_else(|| GStreamerError::DeviceError("No screen found".to_string()))?;
+
+        let element = gstreamer::ElementFactory::make("ximagesrc")
+            .name(random_string("screen-source"))
+            .build()
+            .map_err(|_| GStreamerError::PipelineError("Failed to create ximagesrc".to_string()))?;
+
+        if let Some(MediaCapability::Screen(cap)) = monitor.capabilities.first() {
+            element.set_property("use-damage", false);
+            element.set_property("show-pointer", true);
+            element.set_property("startx", cap.startx as u32);
+            element.set_property("starty", cap.starty as u32);
+            element.set_property("endx", cap.endx as u32 - 1);
+            element.set_property("endy", cap.endy as u32 - 1);
+        } else {
+            return Err(GStreamerError::PipelineError(
+                "No screen capability found".to_string(),
+            ));
+        }
+
+        Ok(element)
     }
 
     fn get_video_element(&self) -> Result<gstreamer::Element, GStreamerError> {
@@ -1047,6 +1234,18 @@ pub struct AudioCapability {
 }
 
 #[derive(Debug, Clone)]
+pub struct ScreenCapability {
+    pub width: i32,
+    pub height: i32,
+    pub framerates: Vec<i32>,
+    pub codec: String,
+    pub startx: i32,
+    pub starty: i32,
+    pub endx: i32,
+    pub endy: i32,
+}
+
+#[derive(Debug, Clone)]
 pub struct MediaDeviceInfo {
     pub device_path: String,
     pub display_name: String,
@@ -1058,6 +1257,7 @@ pub struct MediaDeviceInfo {
 pub enum MediaCapability {
     Video(VideoCapability),
     Audio(AudioCapability),
+    Screen(ScreenCapability), // For screen capture capabilities
 }
 
 #[derive(Debug, Clone, Error)]

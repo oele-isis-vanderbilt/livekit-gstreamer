@@ -52,9 +52,20 @@ pub struct AudioPublishOptions {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScreenPublishOptions {
+    pub codec: String,
+    pub screen_id_or_name: String,
+    pub width: i32,
+    pub height: i32,
+    pub framerate: i32,
+    pub local_file_save_options: Option<LocalFileSaveOptions>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PublishOptions {
     Video(VideoPublishOptions),
     Audio(AudioPublishOptions),
+    Screen(ScreenPublishOptions),
 }
 
 #[derive(Debug)]
@@ -108,6 +119,7 @@ impl GstMediaStream {
         match &self.publish_options {
             PublishOptions::Video(_) => "Video",
             PublishOptions::Audio(_) => "Audio",
+            PublishOptions::Screen(_) => "Screen",
         }
     }
 
@@ -132,6 +144,9 @@ impl GstMediaStream {
             }
             PublishOptions::Audio(audio_options) => {
                 GstMediaDevice::from_device_path(audio_options.device_id.as_str())?
+            }
+            PublishOptions::Screen(screen_options) => {
+                GstMediaDevice::from_screen_id_or_name(&screen_options.screen_id_or_name)?
             }
         };
 
@@ -224,6 +239,39 @@ impl GstMediaStream {
                         filename,
                     )?,
                 }
+            }
+            PublishOptions::Screen(screen_options) => {
+                let mut filename = None;
+                if let Some(local_file_save_options) = &screen_options.local_file_save_options {
+                    let op_dir = create_dir(local_file_save_options).await?;
+                    let filename_str = format!(
+                        "{}-{}-{}.mp4",
+                        "screen-share",
+                        screen_options.screen_id_or_name.replace(" ", "_"),
+                        chrono::Local::now().format("%Y-%m-%d-%H-%M-%S")
+                    );
+
+                    metadata = Some(RecordingMetadata::new(
+                        filename_str.clone(),
+                        path::absolute(&op_dir)
+                            .unwrap()
+                            .to_string_lossy()
+                            .to_string(),
+                        "screen-share".into(),
+                        "video".into(),
+                        screen_options.codec.clone(),
+                        None,
+                    ));
+                    filename = Some(op_dir.join(filename_str).to_string_lossy().to_string());
+                }
+                device.screen_share_pipeline(
+                    &screen_options.codec,
+                    screen_options.width,
+                    screen_options.height,
+                    screen_options.framerate,
+                    frame_tx_arc.clone(),
+                    filename,
+                )?
             }
         };
 
