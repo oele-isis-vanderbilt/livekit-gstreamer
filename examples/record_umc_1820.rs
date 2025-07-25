@@ -33,5 +33,5 @@ async fn main() -> Result<(), GStreamerError> {
 
     let (frame_rx, close_rx) = stream.subscribe().unwrap();
 
-    wait::wait_stream(&mut stream, frame_rx, close_rx).await
+    wait::wait_streams(&mut [stream], vec![frame_rx], vec![close_rx]).await
 }

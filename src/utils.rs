@@ -8,3 +8,10 @@ pub fn random_string(prefix: &str) -> String {
         .collect();
     format!("{}-{}", prefix, random_string)
 }
+
+pub fn system_time_nanos() -> i64 {
+    let now = std::time::SystemTime::now();
+    now.duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as i64)
+        .unwrap_or(0)
+}

@@ -1,192 +1,20 @@
 use gstreamer::{prelude::*, Buffer};
-use gstreamer::{Device, DeviceMonitor};
 use gstreamer_app::AppSink;
-use once_cell::sync::Lazy;
-use serde::{de, Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 use thiserror::Error;
 use tokio::sync::broadcast;
 
+use crate::get_device_capabilities;
+use crate::get_gst_device;
 use crate::utils::random_string;
+use crate::utils::system_time_nanos;
 
 const SUPPORTED_VIDEO_CODECS: [&str; 2] = ["video/x-h264", "image/jpeg"];
 const SUPPORTED_AUDIO_CODECS: [&str; 1] = ["audio/x-raw"];
 const VIDEO_FRAME_FORMAT: &str = "I420";
-
-static GLOBAL_DEVICE_MONITOR: Lazy<Arc<Mutex<DeviceMonitor>>> = Lazy::new(|| {
-    let monitor = DeviceMonitor::new();
-    monitor.add_filter(Some("Video/Source"), None);
-    monitor.add_filter(Some("Audio/Source"), None);
-    if let Err(err) = monitor.start() {
-        eprintln!("Failed to start global device monitor: {:?}", err);
-    }
-    Arc::new(Mutex::new(monitor))
-});
-
-pub fn get_gst_device(path: &str) -> Option<Device> {
-    let device_monitor = GLOBAL_DEVICE_MONITOR.clone();
-    let device_monitor = device_monitor.lock().unwrap();
-    let devices = device_monitor.devices();
-
-    devices.into_iter().find(|d| {
-        let props = d.properties();
-
-        match props {
-            Some(props) => {
-                // Try matching against multiple possible properties
-                let candidates = [
-                    props.get::<Option<String>>("object.path"),
-                    props.get::<Option<String>>("device.path"),
-                    props.get::<Option<String>>("device.id"),
-                ];
-
-                // Return true if any property matches the given path
-                candidates.iter().any(|res| {
-                    res.clone()
-                        .is_ok_and(|opt| opt.as_ref().is_some_and(|v| v.contains(path)))
-                })
-            }
-            None => false,
-        }
-    })
-}
-
-fn system_time_nanos() -> i64 {
-    let now = std::time::SystemTime::now();
-    now.duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as i64)
-        .unwrap_or(0)
-}
-
-fn get_device_capabilities(device: &Device) -> Vec<MediaCapability> {
-    let caps = match device.caps() {
-        Some(c) => c,
-        None => return vec![],
-    };
-
-    if device.device_class() == "Video/Source" || device.device_class() == "Source/Video" {
-        caps.iter()
-            .filter_map(|structure| {
-                let width = structure.get::<i32>("width").ok();
-                let height = structure.get::<i32>("height").ok();
-
-                let mut framerates = vec![];
-                if let Ok(framerate_list) = structure.get::<gstreamer::List>("framerate") {
-                    for val in framerate_list.iter() {
-                        if let Ok(frac) = val.get::<gstreamer::Fraction>() {
-                            framerates.push(frac.numer() as f64 / frac.denom() as f64);
-                        }
-                    }
-                } else if let Ok(framerate) = structure.get::<gstreamer::Fraction>("framerate") {
-                    framerates.push(framerate.numer() as f64 / framerate.denom() as f64);
-                }
-
-                let codec = structure.name().to_string();
-
-                Some(MediaCapability::Video(VideoCapability {
-                    width: width.unwrap_or(0),
-                    height: height.unwrap_or(0),
-                    framerates: framerates.iter().map(|&f| f as i32).collect(),
-                    codec,
-                }))
-            })
-            .collect()
-    } else {
-        caps.iter()
-            .filter_map(|structure| {
-                let channels = structure.get::<i32>("channels").unwrap_or(0);
-
-                let mut rates = vec![];
-                // Try to get a list of rates
-                if let Ok(rate_list) = structure.get::<gstreamer::List>("rate") {
-                    for val in rate_list.iter() {
-                        if let Ok(rate) = val.get::<i32>() {
-                            rates.push(rate);
-                        }
-                    }
-                } else if let Ok(rate) = structure.get::<i32>("rate") {
-                    rates.push(rate);
-                } else if let Ok(rate_range) = structure.get::<gstreamer::IntRange<i32>>("rate") {
-                    rates.push(rate_range.min());
-                    rates.push(rate_range.max());
-                }
-
-                let codec = structure.name().to_string();
-
-                Some(MediaCapability::Audio(AudioCapability {
-                    channels,
-                    framerates: if rates.is_empty() {
-                        (0, 0)
-                    } else {
-                        (
-                            *rates.iter().min().unwrap_or(&0),
-                            *rates.iter().max().unwrap_or(&0),
-                        )
-                    },
-                    codec,
-                }))
-            })
-            .collect()
-    }
-}
-
-fn get_device_path(device: &Device) -> Option<String> {
-    let props = device.properties()?;
-    let mut path = None;
-
-    #[cfg(target_os = "linux")]
-    {
-        path = if device.device_class() == "Audio/Source" {
-            props.get("api.alsa.path").ok()
-        } else {
-            props.get("api.v4l2.path").ok()
-        };
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        path = props
-            .get("device.path")
-            .unwrap_or_else(|_| props.get("device.id").ok().flatten());
-    }
-
-    #[allow(clippy::manual_unwrap_or_default)]
-    path.or_else(|| match props.get::<Option<String>>("device.path") {
-        Ok(path) => path,
-        Err(_) => None,
-    })
-}
-
-fn get_device_class(device: &Device) -> String {
-    match device.device_class().as_str() {
-        "Video/Source" | "Source/Video" => "Video/Source".to_string(),
-        "Audio/Source" | "Source/Audio" => "Audio/Source".to_string(),
-        _ => device.device_class().to_string(),
-    }
-}
-
-pub fn get_devices_info() -> Vec<MediaDeviceInfo> {
-    let device_monitor = GLOBAL_DEVICE_MONITOR.clone();
-    let device_monitor = device_monitor.lock().unwrap();
-    let devices = device_monitor.devices();
-    devices
-        .into_iter()
-        .filter_map(|d| {
-            let path = get_device_path(&d)?;
-            let caps = get_device_capabilities(&d);
-            let display_name = d.display_name().into();
-            let class = get_device_class(&d);
-            Some(MediaDeviceInfo {
-                device_path: path,
-                display_name,
-                capabilities: caps,
-                device_class: class,
-            })
-        })
-        .collect()
-}
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
 struct FileSinkTiming {
