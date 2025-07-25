@@ -39,16 +39,29 @@ async fn main() -> Result<(), LKParticipantError> {
         .unwrap();
 
     let new_room = Arc::new(room);
-    let mut stream = GstMediaStream::new(PublishOptions::Screen(ScreenPublishOptions {
-        codec: "video/x-raw".to_string(),
-        width: 1920,
-        height: 1080,
-        framerate: 30,
-        screen_id_or_name: "DP-3-2".to_string(),
-        local_file_save_options: Some(LocalFileSaveOptions {
-            output_dir: "recordings".to_string(),
-        }),
-    }));
+    let mut stream = if cfg!(target_os = "linux") {
+        GstMediaStream::new(PublishOptions::Screen(ScreenPublishOptions {
+            codec: "video/x-raw".to_string(),
+            width: 1920,
+            height: 1080,
+            framerate: 30,
+            screen_id_or_name: "DP-3-2".to_string(),
+            local_file_save_options: Some(LocalFileSaveOptions {
+                output_dir: "recordings".to_string(),
+            }),
+        }))
+    } else {
+        GstMediaStream::new(PublishOptions::Screen(ScreenPublishOptions {
+            codec: "video/x-raw".to_string(),
+            width: 1920,
+            height: 1080,
+            framerate: 30,
+            screen_id_or_name: "65537".to_string(),
+            local_file_save_options: Some(LocalFileSaveOptions {
+                output_dir: "recordings".to_string(),
+            }),
+        }))
+    };
 
     stream.start().await.unwrap();
 

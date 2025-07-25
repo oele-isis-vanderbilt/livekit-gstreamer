@@ -227,7 +227,7 @@ impl GstMediaDevice {
     }
 
     pub fn from_screen_id_or_name(screen_id_or_name: &str) -> Result<Self, GStreamerError> {
-        let monitor = get_monitor(screen_id_or_name)
+        let (monitor, _) = get_monitor(screen_id_or_name)
             .ok_or_else(|| GStreamerError::DeviceError("No screen found".to_string()))?;
 
         let device = GstMediaDevice {
@@ -241,7 +241,15 @@ impl GstMediaDevice {
 
     pub fn capabilities(&self) -> Vec<MediaCapability> {
         if self.device_class == "Screen/Source" {
-            return get_monitor(&self.device_path).map_or(vec![], |m| m.capabilities);
+            if cfg!(target_os = "windows") {
+                if let Some((monitor, _)) = get_monitor(&self.device_path) {
+                    return monitor.capabilities;
+                } else {
+                    return vec![];
+                }
+            } else {
+                return get_monitor(&self.device_path).map_or(vec![], |(m, _)| m.capabilities);
+            }
         }
         let device = get_gst_device(&self.device_path).unwrap();
         get_device_capabilities(&device)
@@ -956,6 +964,31 @@ impl GstMediaDevice {
             })?;
 
         Ok(pipeline)
+    }
+
+    #[cfg(target_os = "windows")]
+    fn get_screen_element(&self) -> Result<gstreamer::Element, GStreamerError> {
+        let (_, idx) = get_monitor(&self.device_path)
+            .ok_or_else(|| GStreamerError::DeviceError("No screen found".to_string()))?;
+
+        // Try the dxgiscreencapsrc if available
+        if gstreamer::ElementFactory::find("dx9screencapsrc").is_some() {
+            let element = gstreamer::ElementFactory::make("dx9screencapsrc")
+                .name(random_string("screen-source"))
+                .build()
+                .map_err(|_| {
+                    GStreamerError::PipelineError("Failed to create dxgiscreencapsrc".to_string())
+                })?;
+
+            element.set_property("monitor", idx);
+            element.set_property("cursor", true);
+
+            Ok(element)
+        } else {
+            Err(GStreamerError::PipelineError(
+                "dx9screencapsrc not found".to_string(),
+            ))
+        }
     }
 
     #[cfg(target_os = "linux")]
