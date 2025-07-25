@@ -34,19 +34,6 @@ async fn main() -> Result<(), LKParticipantError> {
         .to_jwt()
         .unwrap();
 
-    let token2 = access_token::AccessToken::with_api_key(&api_key, &api_secret)
-        .with_identity("room-monitor")
-        .with_name("RoomMonitor")
-        .with_grants(access_token::VideoGrants {
-            room_join: true,
-            room: "DemoRoom".to_string(),
-            ..Default::default()
-        })
-        .to_jwt()
-        .unwrap();
-
-    println!("Token for room monitor: {}", token2);
-
     let (room, mut room_rx) = Room::connect(&url, &token, RoomOptions::default())
         .await
         .unwrap();
