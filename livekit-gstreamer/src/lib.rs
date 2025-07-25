@@ -8,3 +8,7 @@ pub use devices::*;
 pub use lk_participant::*;
 pub use media_device::*;
 pub use media_stream::*;
+
+pub fn initialize_gstreamer() {
+    gstreamer::init().expect("Failed to initialize GStreamer");
+}
