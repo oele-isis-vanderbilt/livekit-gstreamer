@@ -17,7 +17,7 @@ async fn main() -> Result<(), GStreamerError> {
     let mut stream = if cfg!(target_os = "linux") {
         GstMediaStream::new(PublishOptions::Audio(AudioPublishOptions {
             codec: "audio/x-raw".to_string(),
-            device_id: "hw:3".to_string(),
+            device_id: "front:1".to_string(),
             framerate: 48000,
             channels: 1,
             selected_channel: None,

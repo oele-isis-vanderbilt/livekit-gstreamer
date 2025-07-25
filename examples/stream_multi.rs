@@ -18,7 +18,7 @@ async fn main() -> Result<(), GStreamerError> {
     let mut audio_stream = if cfg!(target_os = "linux") {
         GstMediaStream::new(PublishOptions::Audio(AudioPublishOptions {
             codec: "audio/x-raw".to_string(),
-            device_id: "hw:3".to_string(),
+            device_id: "front:1".to_string(),
             framerate: 48000,
             channels: 1,
             selected_channel: None,
@@ -44,8 +44,8 @@ async fn main() -> Result<(), GStreamerError> {
         // This can be checked by running `v4l2-ctl --list-formats-ext -d /dev/video0` for example or using gst-device-monitor-1.0 Video/Source
         GstMediaStream::new(PublishOptions::Video(VideoPublishOptions {
             codec: "image/jpeg".to_string(),
-            width: 1920,
-            height: 1080,
+            width: 1280,
+            height: 720,
             framerate: 30,
             device_id: "/dev/video0".to_string(),
             local_file_save_options: Some(LocalFileSaveOptions {
