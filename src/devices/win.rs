@@ -1,9 +1,10 @@
+use display_info::DisplayInfo;
 use once_cell::sync::Lazy;
 use std::sync::{Arc, Mutex};
 
 use gstreamer::{prelude::*, Device, DeviceMonitor};
 
-use crate::{AudioCapability, MediaCapability, MediaDeviceInfo, VideoCapability};
+use crate::{AudioCapability, MediaCapability, MediaDeviceInfo, ScreenCapability, VideoCapability};
 
 static GLOBAL_DEVICE_MONITOR: Lazy<Arc<Mutex<DeviceMonitor>>> = Lazy::new(|| {
     let monitor = DeviceMonitor::new();
@@ -157,11 +158,74 @@ fn confirm_supported_api(device: &Device) -> Option<bool> {
     SUPPORTED_APIS.contains(&api.as_str()).then_some(true)
 }
 
+pub fn parse_monitors_windows() -> Vec<MediaDeviceInfo> {
+    let mut all_monitors = DisplayInfo::all().unwrap_or_else(|_| vec![]);
+    all_monitors.sort_by_key(|m| (m.x, m.y));
+
+    all_monitors
+        .into_iter()
+        .map(MediaDeviceInfo::from)
+        .collect()
+}
+
+pub fn get_monitor(id_or_name: &str) -> Option<(MediaDeviceInfo, i32)> {
+    let mut all_monitors = DisplayInfo::all().unwrap_or_else(|_| vec![]);
+
+    all_monitors.sort_by_key(|m| (m.x, m.y));
+    all_monitors
+        .into_iter()
+        .enumerate()
+        .find(|(_, m)| m.id.to_string() == id_or_name || m.name == id_or_name)
+        .map(|(idx, m)| (MediaDeviceInfo::from(m), idx as i32))
+}
+
+fn get_frame_rates(display_info: &DisplayInfo) -> Vec<i32> {
+    let rate = display_info.frequency;
+    let mut rates = vec![rate as i32];
+    if rate > 30.0 {
+        rates.push(30);
+    }
+
+    rates
+}
+
+impl From<DisplayInfo> for MediaDeviceInfo {
+    fn from(display_info: DisplayInfo) -> Self {
+        use std::vec;
+        println!("Display Info: {:?}", display_info);
+
+        let startx = display_info.x;
+        let starty = display_info.y;
+
+        let endx = startx + display_info.width as i32;
+        let endy = starty + display_info.height as i32;
+
+        let actual_width = display_info.width as i32;
+        let actual_height = display_info.height as i32;
+
+        MediaDeviceInfo {
+            device_path: display_info.id.clone().to_string(),
+            display_name: display_info.friendly_name.clone(),
+            capabilities: vec![MediaCapability::Screen(ScreenCapability {
+                width: actual_width,
+                height: actual_height,
+                framerates: get_frame_rates(&display_info),
+                codec: "video/x-raw".to_string(),
+                startx,
+                starty,
+                endx,
+                endy,
+            })],
+            device_class: "Screen/Source".to_string(),
+        }
+    }
+}
+
 pub fn get_devices_info() -> Vec<MediaDeviceInfo> {
     let device_monitor = GLOBAL_DEVICE_MONITOR.clone();
     let device_monitor = device_monitor.lock().unwrap();
     let devices = device_monitor.devices();
-    devices
+    let mut devices = devices
         .into_iter()
         .filter_map(|d| {
             confirm_supported_api(&d)?;
@@ -176,5 +240,9 @@ pub fn get_devices_info() -> Vec<MediaDeviceInfo> {
                 device_class: class,
             })
         })
-        .collect()
+        .collect::<Vec<MediaDeviceInfo>>();
+
+    devices.extend(parse_monitors_windows());
+
+    devices
 }

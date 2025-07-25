@@ -34,21 +34,47 @@ async fn main() -> Result<(), LKParticipantError> {
         .to_jwt()
         .unwrap();
 
+    let token2 = access_token::AccessToken::with_api_key(&api_key, &api_secret)
+        .with_identity("room-monitor")
+        .with_name("RoomMonitor")
+        .with_grants(access_token::VideoGrants {
+            room_join: true,
+            room: "DemoRoom".to_string(),
+            ..Default::default()
+        })
+        .to_jwt()
+        .unwrap();
+
+    println!("Token for room monitor: {}", token2);
+
     let (room, mut room_rx) = Room::connect(&url, &token, RoomOptions::default())
         .await
         .unwrap();
 
     let new_room = Arc::new(room);
-    let mut stream = GstMediaStream::new(PublishOptions::Screen(ScreenPublishOptions {
-        codec: "video/x-raw".to_string(),
-        width: 1920,
-        height: 1080,
-        framerate: 30,
-        screen_id_or_name: "DP-3-2".to_string(),
-        local_file_save_options: Some(LocalFileSaveOptions {
-            output_dir: "recordings".to_string(),
-        }),
-    }));
+    let mut stream = if cfg!(target_os = "linux") {
+        GstMediaStream::new(PublishOptions::Screen(ScreenPublishOptions {
+            codec: "video/x-raw".to_string(),
+            width: 1920,
+            height: 1080,
+            framerate: 30,
+            screen_id_or_name: "DP-3-2".to_string(),
+            local_file_save_options: Some(LocalFileSaveOptions {
+                output_dir: "recordings".to_string(),
+            }),
+        }))
+    } else {
+        GstMediaStream::new(PublishOptions::Screen(ScreenPublishOptions {
+            codec: "video/x-raw".to_string(),
+            width: 1920,
+            height: 1080,
+            framerate: 30,
+            screen_id_or_name: "65537".to_string(),
+            local_file_save_options: Some(LocalFileSaveOptions {
+                output_dir: "recordings".to_string(),
+            }),
+        }))
+    };
 
     stream.start().await.unwrap();
 
