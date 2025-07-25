@@ -1251,7 +1251,7 @@ impl GstMediaDevice {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VideoCapability {
     pub width: i32,
     pub height: i32,
@@ -1259,14 +1259,14 @@ pub struct VideoCapability {
     pub codec: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioCapability {
     pub channels: i32,
     pub framerates: (i32, i32),
     pub codec: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScreenCapability {
     pub width: i32,
     pub height: i32,
@@ -1278,7 +1278,7 @@ pub struct ScreenCapability {
     pub endy: i32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MediaDeviceInfo {
     pub device_path: String,
     pub display_name: String,
@@ -1286,7 +1286,7 @@ pub struct MediaDeviceInfo {
     pub device_class: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum MediaCapability {
     Video(VideoCapability),
     Audio(AudioCapability),
