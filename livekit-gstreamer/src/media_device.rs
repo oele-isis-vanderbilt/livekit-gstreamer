@@ -227,8 +227,19 @@ impl GstMediaDevice {
     }
 
     pub fn from_screen_id_or_name(screen_id_or_name: &str) -> Result<Self, GStreamerError> {
-        let (monitor, _) = get_monitor(screen_id_or_name)
-            .ok_or_else(|| GStreamerError::DeviceError("No screen found".to_string()))?;
+        let monitor = {
+            #[cfg(target_os = "windows")]
+            {
+                let (monitor, _) = get_monitor(screen_id_or_name)
+                    .ok_or_else(|| GStreamerError::DeviceError("No screen found".to_string()))?;
+                monitor
+            }
+            #[cfg(target_os = "linux")]
+            {
+                get_monitor(screen_id_or_name)
+                    .ok_or_else(|| GStreamerError::DeviceError("No screen found".to_string()))?
+            }
+        };
 
         let device = GstMediaDevice {
             display_name: monitor.display_name,
@@ -241,14 +252,18 @@ impl GstMediaDevice {
 
     pub fn capabilities(&self) -> Vec<MediaCapability> {
         if self.device_class == "Screen/Source" {
-            if cfg!(target_os = "windows") {
+            #[cfg(target_os = "windows")]
+            {
                 if let Some((monitor, _)) = get_monitor(&self.device_path) {
                     return monitor.capabilities;
                 } else {
                     return vec![];
                 }
-            } else {
-                return get_monitor(&self.device_path).map_or(vec![], |(m, _)| m.capabilities);
+            }
+
+            #[cfg(target_os = "linux")]
+            {
+                return get_monitor(&self.device_path).map_or(vec![], |m| m.capabilities);
             }
         }
         let device = get_gst_device(&self.device_path).unwrap();

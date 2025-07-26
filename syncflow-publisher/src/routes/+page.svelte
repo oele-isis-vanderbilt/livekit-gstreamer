@@ -1,68 +1,88 @@
 <script lang="ts">
+    import { goto } from "$app/navigation";
+    import { error } from "@sveltejs/kit";
   import { invoke } from "@tauri-apps/api/core";
+    import { Button } from "flowbite-svelte";
   import { onMount } from "svelte";
-  import {
-    MultiSelect
-  } from 'flowbite-svelte';
-  import type {
-    SelectOptionType,
-  } from 'flowbite-svelte';
 
-
-  let devices = $state([]);
+  let registrationDetails = $state(null);
 
   onMount(async () => {
     try {
-      devices = await invoke("get_devices");
-    } catch (error) {
-      console.error("Failed to fetch devices:", error);
+      const registration = await invoke("get_registration");
+      if (registration) {
+        registrationDetails = registration;
+        console.log("Registration details fetched:", registrationDetails);
+      } else {
+        error(404, { message: "Registration details not found." });
+      }
+    } catch (err) {
+      goto("/register");
     }
   });
 
-  let videoDevices = $derived.by(() => {
-    return devices.filter(device => device.device_class === "Video/Source")
-  });
+  function deregister() {
+    invoke("delete_registration")
+      .then(() => {
+        goto("/register");
+      })
+      .catch((err) => {
+        error(500, { message: `Deregistration failed: ${JSON.stringify(err)}` });
+      });
+  }
 
-  let audioDevices = $derived.by(() => {
-    return devices.filter(device => device.device_class === "Audio/Source")
-  });
 
-  let monitors = $derived.by(() => {
-    return devices.filter(device => device.device_class === "Screen/Source")  
-  });
-
-  let videoSelectItems: SelectOptionType<string> = $derived.by(() => {
-    let items: { name: string; value: string }[] = [];
-    videoDevices.forEach((device, idx) => {
-      if (device.capabilities && Array.isArray(device.capabilities)) {
-        device.capabilities.forEach((capability, capIdx) => {
-          items.push({
-            name: `${device.display_name || `Video Device ${idx + 1}`} - ${capability}`,
-            value: `${device.device_path}::${capability}`
-          });
-        });
-      } else {
-        items.push({
-          name: device.display_name || `Video Device ${idx + 1}`,
-          value: device.device_path
-        });
-      }
-    });
-    return items;
-  });
-  let selectedVideoDevicePaths: string[] = $state([]);
-
-  let selectedVideoDevices = $derived.by(() => {
-    return videoDevices.filter(device => selectedVideoDevicePaths.includes(device.device_path));
-  });
 </script>
 
 <main class="container mx-auto flex flex-col w-full justify-start p-2 gap-4">
-  <h1 class="text-2xl font-bold">Welcome to SyncFlow Publisher</h1>
-  <h2 class="text-xl font-bold">Select Video Devices</h2>
-  <MultiSelect items={videoSelectItems} bind:value={selectedVideoDevicePaths} placeholder="Select video devices" />
-
-  <div class="flex flex-row items-center justify-between w-full h-full">
-    <pre>{JSON.stringify(selectedVideoDevices, null, 2)}</pre>
+  <div class="flex justify-between items-center">
+    <h1 class="text-xl font-bold flex-1">Welcome to SyncFlow Publisher!,  {registrationDetails?.deviceName}</h1>
+    <Button
+      color="red"
+      onclick={deregister}
+      >Delete Registration</Button>
   </div>
+  {#if registrationDetails}
+    <div class="bg-white rounded-lg shadow-md p-6 mt-4">
+      <h2 class="text-lg font-semibold mb-4">Device & Project Details</h2>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <div class="font-medium text-gray-700">Device ID:</div>
+          <div class="text-gray-900">{registrationDetails.deviceId}</div>
+        </div>
+        <div>
+          <div class="font-medium text-gray-700">Device Name:</div>
+          <div class="text-gray-900">{registrationDetails.deviceName}</div>
+        </div>
+        <div>
+          <div class="font-medium text-gray-700">Device Group:</div>
+          <div class="text-gray-900">{registrationDetails.deviceGroup}</div>
+        </div>
+        <div>
+          <div class="font-medium text-gray-700">Project Name:</div>
+          <div class="text-gray-900">{registrationDetails.projectName}</div>
+        </div>
+        <div>
+          <div class="font-medium text-gray-700">Project ID:</div>
+          <div class="text-gray-900">{registrationDetails.projectId}</div>
+        </div>
+        <div>
+          <div class="font-medium text-gray-700">Project Comments:</div>
+          <div class="text-gray-900">{registrationDetails.projectComments}</div>
+        </div>
+        <div>
+          <div class="font-medium text-gray-700">LiveKit Server URL:</div>
+          <div class="text-gray-900">{registrationDetails.lkServerUrl}</div>
+        </div>
+        <div>
+          <div class="font-medium text-gray-700">S3 Bucket Name:</div>
+          <div class="text-gray-900">{registrationDetails.s3BucketName}</div>
+        </div>
+        <div>
+          <div class="font-medium text-gray-700">S3 Endpoint:</div>
+          <div class="text-gray-900">{registrationDetails.s3Endpoint}</div>
+        </div>
+      </div>
+    </div>
+  {/if}
 </main>
